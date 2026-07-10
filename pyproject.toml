@@ -1,0 +1,12 @@
+[project]
+name = "oriented-pano-mot-benchmark"
+version = "0.1.0"
+description = "Spherical rotation tools for oriented MOT benchmarks on panoramic imagery"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.23",
+  "opencv-python>=4.5",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
