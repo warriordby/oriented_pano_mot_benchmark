@@ -1,13 +1,14 @@
 # Oriented Pano MOT Benchmark
 
-This repository provides spherical rotation tools for building oriented
-multi-object tracking benchmarks from panoramic datasets.
+This repository provides projection-aware SO(3) rotation tools for building
+oriented multi-object tracking benchmarks from panoramic datasets.
 
-The implementation follows PriOr-Flow-style panoramic projection: PriOr-Flow
+The default `erp` projection follows PriOr-Flow-style panoramic geometry:
 pixel-center ERP coordinates are mapped to longitude/latitude, lifted to the
 unit sphere, rotated with SO(3), and projected back to equirectangular image
-coordinates. Image remapping follows PriOr-Flow `generate_samplegrid`: each
-output ray is rotated to locate the source pixel.
+coordinates. The `cylinder` projection maps x to yaw and y to `tan(elevation)`
+before using the same SO(3) ray rotation. Image remapping follows PriOr-Flow
+`generate_samplegrid`: each output ray is rotated to locate the source pixel.
 
 It supports:
 
@@ -24,7 +25,7 @@ It supports:
 - `docs/quadtrack_orientation_benchmark.md`: QuadTrack conversion examples.
 - `docs/dancetrack_orientation_benchmark.md`: DanceTrack conversion examples.
 - `docs/linux_reproducibility.md`: Linux environment and reproduction notes.
-- `src/pano_geometry.py`: reusable equirectangular SO(3) geometry helpers.
+- `src/pano_geometry.py`: reusable ERP/cylindrical SO(3) projection helpers.
 - `configs/pipeline.example.yaml`: generic experiment configuration.
 - `configs/quadtrack_orientation.example.ps1`: Windows QuadTrack example.
 - `configs/dancetrack_orientation.example.sh`: Linux DanceTrack example.
@@ -105,6 +106,7 @@ python -B tools/convert_quadtrack_to_orientation_benchmark.py \
   --out-root ./outputs/quadtrack_orientation_benchmark \
   --image-width 2048 \
   --image-height 480 \
+  --projection cylinder \
   --vertical-fov-deg 120 \
   --variants prior_a2b,polar_up,target_north_55 \
   --edge-samples 32 \
@@ -125,6 +127,7 @@ python -B tools/convert_quadtrack_to_orientation_benchmark.py \
   --out-root ./outputs/quadtrack_orientation_benchmark_with_images \
   --image-width 2048 \
   --image-height 480 \
+  --projection cylinder \
   --vertical-fov-deg 120 \
   --variants prior_a2b,polar_up,target_north_55 \
   --edge-samples 32 \
@@ -140,11 +143,13 @@ both zero-based names such as `000000.jpg` and one-based names such as
 exist and are readable:
 
 QuadTrack's 120-degree vertical coverage is a limited-FOV panorama, not the
-full 180-degree ERP assumed by PriOr-Flow's paper figures. Strong non-yaw image
-rotations can therefore request source latitudes that do not exist in the
-original image. The converter fills those pixels with `--invalid-image-fill`
-instead of stretching top/bottom rows. Use `--vertical-fov-deg 180` only when
-the source image and boxes are in full-ERP coordinates.
+full 180-degree ERP assumed by PriOr-Flow's paper figures. Use
+`--projection cylinder` if the source images are cylindrical panoramas; use
+`--projection erp` only when y is latitude-linear ERP. Strong non-yaw image
+rotations can still request source rays that do not exist in the original
+image. The converter fills those pixels with `--invalid-image-fill` instead of
+stretching top/bottom rows. Use `--vertical-fov-deg 180` only when the source
+image and boxes are in full-ERP coordinates.
 
 ```bash
 find ../QuadTrack/test -maxdepth 3 \( -path '*/img1/*' -o -path '*/images/*' \) | head
@@ -172,6 +177,7 @@ python -B tools/convert_quadtrack_to_orientation_benchmark.py \
   --out-root outputs/quadtrack_orientation_benchmark \
   --image-width 2048 \
   --image-height 480 \
+  --projection cylinder \
   --vertical-fov-deg 120 \
   --variants prior_a2b,polar_up,target_north_55 \
   --edge-samples 32 \
@@ -188,6 +194,7 @@ python -B tools/convert_quadtrack_to_orientation_benchmark.py \
   --out-root outputs/quadtrack_orientation_benchmark \
   --image-width 2048 \
   --image-height 480 \
+  --projection cylinder \
   --vertical-fov-deg 120 \
   --variants target_north_55,target_south_55
 ```
@@ -199,6 +206,7 @@ python -B tools/convert_quadtrack_to_orientation_benchmark.py \
   --quadtrack-root /data/QuadTrack_test/OmniTrack_Omnidet_test \
   --image-root /data/QuadTrack_test/images \
   --out-root outputs/quadtrack_orientation_benchmark \
+  --projection cylinder \
   --vertical-fov-deg 120 \
   --variants prior_a2b,polar_up,target_north_55 \
   --rotate-images \
@@ -214,6 +222,7 @@ python -B tools/convert_quadtrack_to_orientation_benchmark.py \
   --out-root outputs/quadtrack_orientation_benchmark \
   --image-width 2048 \
   --image-height 480 \
+  --projection cylinder \
   --vertical-fov-deg 120 \
   --variants target_north_55
 ```
@@ -223,16 +232,20 @@ Common parameter adjustments:
 - `--image-width`, `--image-height`: set these to the panorama resolution used
   by the input boxes. QuadTrack examples here use `2048x480`. If `--image-root`
   is provided and images are readable, the converter uses the real image size.
+- `--projection`: projection model for pixels and boxes. `erp` is the
+  PriOr-Flow latitude-linear equirectangular model. `cylinder` maps x to yaw
+  and y to `tan(elevation)`, which is the appropriate setting when the source
+  panorama is cylindrical.
 - `--vertical-fov-deg`: vertical angular coverage used by the y coordinate.
-  QuadTrack uses `120`; use `180` only when the source image is a full ERP in
-  PriOr-Flow's original vertical convention.
+  QuadTrack uses `120`; with `--projection cylinder` it must be less than
+  `180` because cylindrical y has a tangent singularity at +/-90 degrees.
 - `--invalid-image-fill`: controls pixels whose rotated source ray falls
   outside the available vertical FOV when `--rotate-images` is used. `black`
   is closest to PriOr-Flow's `grid_sample` mask behavior. `edge` reproduces the
   old top/bottom row stretching and is mainly for debugging.
 - `--variants`: choose rotations. `prior_a2b`/`prior_b2a` reproduce
   PriOr-Flow orthogonal rotations; `polar_up`/`polar_down` create fixed strong
-  ERP polar distortion; under QuadTrack's 120-degree y coverage use
+  polar projection distortion; under QuadTrack's 120-degree y coverage use
   `target_north_55`/`target_south_55` to stay inside the visible +/-60-degree
   latitude range. Use `target_north_80`/`target_south_80` only with
   `--vertical-fov-deg 180` full-ERP geometry. `custom` uses `--yaw-deg

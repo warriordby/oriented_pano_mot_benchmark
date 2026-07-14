@@ -1,7 +1,7 @@
-"""Spherical geometry helpers for oriented panoramic MOT.
+"""Projection geometry helpers for oriented panoramic MOT.
 
-The helpers assume equirectangular images. Pixel coordinates follow OpenCV
-convention: x grows right, y grows down.
+The helpers support equirectangular/ERP and cylindrical panoramas. Pixel
+coordinates follow OpenCV convention: x grows right, y grows down.
 """
 
 from __future__ import annotations
@@ -12,6 +12,8 @@ from typing import Iterable, Tuple
 
 import numpy as np
 
+PROJECTIONS = {"erp", "cylinder"}
+
 
 @dataclass(frozen=True)
 class OrientedBox:
@@ -20,6 +22,13 @@ class OrientedBox:
     w: float
     h: float
     angle_rad: float
+
+
+def normalize_projection(projection: str) -> str:
+    key = projection.strip().lower()
+    if key not in PROJECTIONS:
+        raise ValueError(f"unknown projection: {projection}")
+    return key
 
 
 def rotation_matrix_zyx(yaw: float, pitch: float, roll: float) -> np.ndarray:
@@ -111,9 +120,32 @@ def pixel_to_xyz(
     width: float,
     height: float,
     vertical_fov_rad: float = pi,
+    projection: str = "erp",
 ) -> np.ndarray:
+    if normalize_projection(projection) == "cylinder":
+        return cylinder_pixels_to_xyz(x, y, width, height, vertical_fov_rad=vertical_fov_rad)
     lon, lat = pixels_to_lonlat(x, y, width, height, vertical_fov_rad=vertical_fov_rad)
     return lonlat_to_xyz(lon, lat)
+
+
+def cylinder_pixels_to_xyz(
+    x: np.ndarray,
+    y: np.ndarray,
+    width: float,
+    height: float,
+    vertical_fov_rad: float = pi,
+) -> np.ndarray:
+    """Map cylindrical panorama pixels to unit rays.
+
+    x is linear in yaw. y is linear in tan(elevation), which is the standard
+    cylindrical projection. vertical_fov_rad is the covered elevation angle.
+    """
+    yaw = 2.0 * pi * ((np.asarray(x, dtype=np.float64) + 0.5) / float(width) - 0.5)
+    max_v = np.tan(float(vertical_fov_rad) * 0.5)
+    vertical = (0.5 - (np.asarray(y, dtype=np.float64) + 0.5) / float(height)) * (2.0 * max_v)
+    rays = np.stack([np.cos(yaw), np.sin(yaw), vertical], axis=-1)
+    norm = np.linalg.norm(rays, axis=-1, keepdims=True)
+    return rays / np.maximum(norm, 1e-12)
 
 
 def xyz_to_lonlat(xyz: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -125,12 +157,44 @@ def xyz_to_lonlat(xyz: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     return lon, lat
 
 
+def xyz_to_pixels(
+    xyz: np.ndarray,
+    width: float,
+    height: float,
+    vertical_fov_rad: float = pi,
+    projection: str = "erp",
+) -> Tuple[np.ndarray, np.ndarray]:
+    if normalize_projection(projection) == "cylinder":
+        return xyz_to_cylinder_pixels(xyz, width, height, vertical_fov_rad=vertical_fov_rad)
+    lon, lat = xyz_to_lonlat(xyz)
+    return lonlat_to_pixels(lon, lat, width, height, vertical_fov_rad=vertical_fov_rad)
+
+
+def xyz_to_cylinder_pixels(
+    xyz: np.ndarray,
+    width: float,
+    height: float,
+    vertical_fov_rad: float = pi,
+) -> Tuple[np.ndarray, np.ndarray]:
+    unit = np.asarray(xyz, dtype=np.float64)
+    norm = np.linalg.norm(unit, axis=-1, keepdims=True)
+    unit = unit / np.maximum(norm, 1e-12)
+    yaw = np.arctan2(unit[..., 1], unit[..., 0])
+    radial = np.maximum(np.linalg.norm(unit[..., :2], axis=-1), 1e-12)
+    vertical = unit[..., 2] / radial
+    max_v = np.tan(float(vertical_fov_rad) * 0.5)
+    x = (yaw / (2.0 * pi) + 0.5) * float(width) - 0.5
+    y = (0.5 - vertical / (2.0 * max_v)) * float(height) - 0.5
+    return x, y
+
+
 def make_equirectangular_remap(
     width: int,
     height: int,
     rotation: np.ndarray,
     vertical_fov_rad: float = pi,
     clip_y: bool = False,
+    projection: str = "erp",
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Build PriOr-Flow-style remap arrays for cv2.remap.
 
@@ -138,20 +202,25 @@ def make_equirectangular_remap(
     source sampling ray. With row-vector numpy arrays this is xyz_out @ R.T.
     vertical_fov_rad defaults to pi for original full-ERP PriOr-Flow behavior;
     use 2*pi/3 for QuadTrack's 120-degree vertical coverage.
-    When vertical_fov_rad < pi, non-yaw rotations can request source latitudes
-    outside the input crop. Keep clip_y=False to expose those samples to the
-    caller's border policy instead of stretching the top/bottom rows.
+    When vertical_fov_rad < pi, non-yaw rotations can request source rays
+    outside the input vertical range. Keep clip_y=False to expose those samples
+    to the caller's border policy instead of stretching the top/bottom rows.
     """
+    projection = normalize_projection(projection)
     yy, xx = np.meshgrid(
         np.arange(height, dtype=np.float64),
         np.arange(width, dtype=np.float64),
         indexing="ij",
     )
-    lon, lat = pixels_to_lonlat(xx, yy, width, height, vertical_fov_rad=vertical_fov_rad)
-    xyz_out = lonlat_to_xyz(lon, lat)
+    xyz_out = pixel_to_xyz(xx, yy, width, height, vertical_fov_rad=vertical_fov_rad, projection=projection)
     xyz_src = xyz_out @ np.asarray(rotation, dtype=np.float64).T
-    src_lon, src_lat = xyz_to_lonlat(xyz_src)
-    map_x, map_y = lonlat_to_pixels(src_lon, src_lat, width, height, vertical_fov_rad=vertical_fov_rad)
+    map_x, map_y = xyz_to_pixels(
+        xyz_src,
+        width,
+        height,
+        vertical_fov_rad=vertical_fov_rad,
+        projection=projection,
+    )
     return (
         np.mod(map_x, float(width)).astype(np.float32),
         (np.clip(map_y, 0.0, float(height - 1)) if clip_y else map_y).astype(np.float32),
@@ -188,18 +257,31 @@ def rotate_points(
     rotation: np.ndarray,
     vertical_fov_rad: float = pi,
     clip_y: bool = True,
+    projection: str = "erp",
 ) -> np.ndarray:
     """Move source-plane points consistently with PriOr-Flow img_rotate.
 
     PriOr-Flow samples source = R @ output, so visible image content moves as
     output = R.T @ source. With row-vector numpy arrays this is xyz @ R.
     """
+    projection = normalize_projection(projection)
     pts = np.asarray(points_xy, dtype=np.float64)
-    lon, lat = pixels_to_lonlat(pts[:, 0], pts[:, 1], width, height, vertical_fov_rad=vertical_fov_rad)
-    xyz = lonlat_to_xyz(lon, lat)
+    xyz = pixel_to_xyz(
+        pts[:, 0],
+        pts[:, 1],
+        width,
+        height,
+        vertical_fov_rad=vertical_fov_rad,
+        projection=projection,
+    )
     rotated = xyz @ np.asarray(rotation, dtype=np.float64)
-    out_lon, out_lat = xyz_to_lonlat(rotated)
-    out_x, out_y = lonlat_to_pixels(out_lon, out_lat, width, height, vertical_fov_rad=vertical_fov_rad)
+    out_x, out_y = xyz_to_pixels(
+        rotated,
+        width,
+        height,
+        vertical_fov_rad=vertical_fov_rad,
+        projection=projection,
+    )
     if clip_y:
         out_y = np.clip(out_y, 0.0, float(height - 1))
     return np.stack([np.mod(out_x, float(width)), out_y], axis=1)
@@ -212,8 +294,16 @@ def rotate_points_unwrapped(
     rotation: np.ndarray,
     reference_x: float | None = None,
     vertical_fov_rad: float = pi,
+    projection: str = "erp",
 ) -> np.ndarray:
-    rotated = rotate_points(points_xy, width, height, rotation, vertical_fov_rad=vertical_fov_rad)
+    rotated = rotate_points(
+        points_xy,
+        width,
+        height,
+        rotation,
+        vertical_fov_rad=vertical_fov_rad,
+        projection=projection,
+    )
     return unwrap_x(rotated, width, reference_x=reference_x)
 
 
@@ -280,11 +370,19 @@ def rotate_xyxy_to_obb(
     rotation: np.ndarray,
     samples_per_side: int = 24,
     vertical_fov_rad: float = pi,
+    projection: str = "erp",
 ) -> Tuple[OrientedBox, np.ndarray, Tuple[float, float, float, float]]:
-    """Rotate an image-plane AABB on the sphere and fit an output OBB."""
+    """Rotate an image-plane AABB through the selected projection and fit an OBB."""
     x1, y1, x2, y2 = [float(v) for v in xyxy]
     edge_points = sample_xyxy_edges(x1, y1, x2, y2, samples_per_side=samples_per_side)
-    rotated_points = rotate_points(edge_points, width, height, rotation, vertical_fov_rad=vertical_fov_rad)
+    rotated_points = rotate_points(
+        edge_points,
+        width,
+        height,
+        rotation,
+        vertical_fov_rad=vertical_fov_rad,
+        projection=projection,
+    )
     unwrapped = unwrap_x(rotated_points, width)
     return pca_oriented_box(unwrapped), unwrapped, polygon_aabb(unwrapped)
 
@@ -294,13 +392,16 @@ def distortion_score_from_y(
     height: int,
     floor: float = 0.05,
     vertical_fov_rad: float = pi,
+    projection: str = "erp",
 ) -> float:
-    """ERP horizontal stretching grows as 1 / cos(latitude)."""
-    _, lat = pixels_to_lonlat(
+    """Approximate horizontal stretching as 1 / cos(elevation)."""
+    xyz = pixel_to_xyz(
         np.asarray([0.0]),
         np.asarray([y]),
         1.0,
         float(height),
         vertical_fov_rad=vertical_fov_rad,
+        projection=projection,
     )
-    return float(1.0 / max(float(np.cos(abs(lat[0]))), float(floor)))
+    elevation = float(np.arcsin(np.clip(xyz[0, 2], -1.0, 1.0)))
+    return float(1.0 / max(float(np.cos(abs(elevation))), float(floor)))

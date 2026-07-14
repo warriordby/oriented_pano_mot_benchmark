@@ -1,8 +1,8 @@
 # QuadTrack Orientation Benchmark Conversion
 
 This project includes a script that converts QuadTrack-style panoramic MOT
-detections into an orientation benchmark by applying PriOr-Flow-style spherical
-rotations.
+detections into an orientation benchmark by applying SO(3) rotations through an
+explicit panorama projection model.
 
 ## Reference From PriOr-Flow
 
@@ -17,7 +17,8 @@ PriOr-Flow uses `projection_prim_ortho.py` for the core panoramic geometry:
 - `img_rotate`
 - `flo_rotate`
 
-The conversion script mirrors the same idea on CPU/OpenCV:
+With `--projection erp`, the conversion script mirrors the same idea on
+CPU/OpenCV:
 
 ```text
 PriOr-Flow pixel-center ERP coordinate
@@ -29,25 +30,27 @@ PriOr-Flow pixel-center ERP coordinate
 
 For original PriOr-Flow full-ERP geometry, the vertical coverage is 180 degrees.
 For QuadTrack, the image y axis covers 120 degrees, so use
-`--vertical-fov-deg 120`. The OBB path still uses the PriOr-Flow-style logic:
-sample box edges, lift samples to the unit sphere, rotate/reproject them, then
-fit an oriented box to the rotated samples.
+`--vertical-fov-deg 120`. If the source panorama is cylindrical, also use
+`--projection cylinder`. In that mode, x is yaw and y is linear in
+`tan(elevation)` before each sample is lifted to a unit ray. The OBB path still
+uses the same high-level logic: sample box edges, lift samples to the unit ray,
+rotate/reproject them, then fit an oriented box to the rotated samples.
 
 This also means a 120-degree QuadTrack image is not a complete sphere. Some
-PriOr-Flow paper visual effects require source latitudes outside the available
+PriOr-Flow paper visual effects require source rays outside the available
 QuadTrack crop. The converter therefore fills those rotated-image pixels with
 `--invalid-image-fill black` by default instead of stretching the top/bottom
 rows. To reproduce PriOr-Flow full-ERP visuals exactly, use a full ERP source
-and `--vertical-fov-deg 180`.
+with `--projection erp --vertical-fov-deg 180`.
 
 For images, the converter follows PriOr-Flow `generate_samplegrid`: for each
 output pixel, rotate the output ray by `R` to find the source pixel. Therefore
 visible image content moves by `R.T`. Labels are moved with that same visible
 content motion so rotated images and oriented boxes stay aligned.
 
-For labels it samples each box edge densely before rotation, because after a
-spherical rotation a rectangle edge is generally not a rectangle edge in the ERP
-image plane.
+For labels it samples each box edge densely before rotation, because after an
+SO(3) projection rotation a rectangle edge is generally not a rectangle edge in
+the output image plane.
 
 ## Supported QuadTrack Inputs
 
@@ -83,6 +86,7 @@ python -B tools/convert_quadtrack_to_orientation_benchmark.py \
   --out-root ./outputs/quadtrack_orientation_benchmark \
   --image-width 2048 \
   --image-height 480 \
+  --projection cylinder \
   --vertical-fov-deg 120 \
   --variants prior_a2b,polar_up,target_north_55 \
   --edge-samples 32 \
@@ -102,6 +106,7 @@ python -B tools/convert_quadtrack_to_orientation_benchmark.py \
   --out-root ./outputs/quadtrack_orientation_benchmark_with_images \
   --image-width 2048 \
   --image-height 480 \
+  --projection cylinder \
   --vertical-fov-deg 120 \
   --variants prior_a2b,polar_up,target_north_55 \
   --edge-samples 32 \
@@ -134,9 +139,9 @@ Each row is parsed as MOTChallenge-style detection data:
 frame,id,x,y,w,h,score,...
 ```
 
-`x,y,w,h` are input ERP AABBs. They are converted to an oriented box after
-spherical rotation by sampling each original box edge before projecting it back
-to the ERP image plane.
+`x,y,w,h` are input panorama AABBs. They are converted to an oriented box after
+SO(3) rotation by sampling each original box edge before projecting it back
+through the selected `--projection` model.
 
 ### QuadTrack JSON
 
@@ -165,6 +170,7 @@ py -B tools\convert_quadtrack_to_orientation_benchmark.py `
   --out-root outputs\quadtrack_orientation_benchmark `
   --image-width 2048 `
   --image-height 480 `
+  --projection cylinder `
   --vertical-fov-deg 120 `
   --variants prior_a2b,polar_up,target_north_55 `
   --edge-samples 32 `
@@ -179,6 +185,7 @@ python -B tools/convert_quadtrack_to_orientation_benchmark.py \
   --out-root outputs/quadtrack_orientation_benchmark \
   --image-width 2048 \
   --image-height 480 \
+  --projection cylinder \
   --vertical-fov-deg 120 \
   --variants prior_a2b,polar_up,target_north_55 \
   --edge-samples 32 \
@@ -195,6 +202,7 @@ python -B tools/convert_quadtrack_to_orientation_benchmark.py \
   --out-root outputs/quadtrack_orientation_benchmark \
   --image-width 2048 \
   --image-height 480 \
+  --projection cylinder \
   --vertical-fov-deg 120 \
   --variants target_north_55,target_south_55
 ```
@@ -206,6 +214,7 @@ py -B tools\convert_quadtrack_to_orientation_benchmark.py `
   --quadtrack-root D:\googledownload\omnitrack\QuadTrack_test\OmniTrack_Omnidet_test `
   --image-root D:\googledownload\omnitrack\QuadTrack_test\images `
   --out-root outputs\quadtrack_orientation_benchmark `
+  --projection cylinder `
   --vertical-fov-deg 120 `
   --variants prior_a2b,polar_up,target_north_55 `
   --edge-samples 32 `
@@ -222,6 +231,7 @@ python -B tools/convert_quadtrack_to_orientation_benchmark.py \
   --out-root outputs/quadtrack_orientation_benchmark \
   --image-width 2048 \
   --image-height 480 \
+  --projection cylinder \
   --vertical-fov-deg 120 \
   --variants target_north_55
 ```
@@ -232,6 +242,7 @@ For a quick debugging run:
 python -B tools/convert_quadtrack_to_orientation_benchmark.py \
   --quadtrack-root /data/QuadTrack_test/OmniTrack_Omnidet_test \
   --out-root outputs/quadtrack_orientation_debug \
+  --projection cylinder \
   --vertical-fov-deg 120 \
   --variants custom \
   --yaw-deg 0 \
@@ -275,8 +286,8 @@ txt files omit those invalid rows because MOT txt has no validity flag.
 
 - `prior_a2b`: PriOr-Flow orthogonal view, Euler z-y-x `[0, 0, -90deg]`.
 - `prior_b2a`: inverse orthogonal view, Euler z-y-x `[0, 0, +90deg]`.
-- `polar_up`: fixed `Ry(+75deg)` strong ERP polar distortion.
-- `polar_down`: fixed `Ry(-75deg)` strong ERP polar distortion.
+- `polar_up`: fixed `Ry(+75deg)` strong polar projection distortion.
+- `polar_down`: fixed `Ry(-75deg)` strong polar projection distortion.
 - `target_north_55`: per-sequence rotation that moves the average detection ray
   near latitude `+55deg`, inside QuadTrack's visible +/-60-degree range.
 - `target_south_55`: per-sequence rotation that moves the average detection ray
@@ -284,7 +295,7 @@ txt files omit those invalid rows because MOT txt has no validity flag.
 - `custom`: use `--yaw-deg --pitch-deg --roll-deg`.
 
 For 120-degree QuadTrack data, `target_north_55` and `target_south_55` are the
-strongest target-latitude presets that stay inside the visible y range with a
+strongest target-elevation presets that stay inside the visible y range with a
 small margin. Use `target_north_80` and `target_south_80` only when
 `--vertical-fov-deg 180` is used with full-ERP sources. Yaw mostly tests seam
 continuity; polar rotations create stronger ERP stretching but can create
@@ -300,10 +311,11 @@ invalid image pixels under limited vertical FOV.
 | `--label-source` | For sequence folders, chooses `gt/gt.txt`, `det/det.txt`, or `auto`. | Use `--label-source det` when converting detector boxes on an official test split; use `gt` when building from ground truth. |
 | `--seq-glob` | Glob used to select sequence files. | Use for partial conversion, e.g. `--seq-glob 'scene_*.txt'`. |
 | `--out-root` | Output benchmark root. | Use a new folder for each experiment setting to avoid mixing variants. |
-| `--image-width`, `--image-height` | ERP resolution used for label-only geometry. | Must match the coordinate system of the boxes. For QuadTrack examples use `2048x480`; change if your exported boxes use another resolution. |
-| `--vertical-fov-deg` | Vertical angular coverage represented by image y. | Use `120` for QuadTrack. Use `180` only for original full-ERP PriOr-Flow geometry. |
+| `--image-width`, `--image-height` | Panorama resolution used for label-only geometry. | Must match the coordinate system of the boxes. For QuadTrack examples use `2048x480`; change if your exported boxes use another resolution. |
+| `--projection` | Pixel projection model: `erp` or `cylinder`. | Use `erp` for PriOr-Flow/full ERP latitude-linear panoramas. Use `cylinder` when the panorama is cylindrical: x is yaw and y is `tan(elevation)`. |
+| `--vertical-fov-deg` | Vertical angular coverage represented by image y. | Use `120` for QuadTrack. With `cylinder`, this must be `<180` because `tan(90deg)` is singular. |
 | `--image-root` | Optional root of original panorama images. | Needed for `--rotate-images`; also lets the script infer real image size when images are readable. |
-| `--rotate-images` | Writes rotated ERP images with the same spherical transform used for labels. | Enable when you want a complete image+label benchmark. Omit for faster label-only conversion. |
+| `--rotate-images` | Writes rotated images with the same projection-aware SO(3) transform used for labels. | Enable when you want a complete image+label benchmark. Omit for faster label-only conversion. |
 | `--invalid-image-fill` | Fill policy for pixels whose source ray is outside the available vertical FOV. | Default `black` is closest to PriOr-Flow's masked out-of-bounds behavior. `edge` reproduces the old top/bottom row stretching and should mainly be used for debugging. |
 | `--variants` | Comma-separated rotation variants. | Use `target_north_55,target_south_55` for QuadTrack 120-degree data; add `prior_a2b,prior_b2a` to reproduce PriOr-Flow orthogonal rotations. Use 80-degree target variants only with full ERP 180-degree geometry. |
 | `--yaw-deg`, `--pitch-deg`, `--roll-deg` | Euler angles for `--variants custom`. | Use for ablations such as `--variants custom --pitch-deg 60`. |
@@ -366,6 +378,7 @@ Fast geometry check:
 python -B tools/convert_quadtrack_to_orientation_benchmark.py \
   --quadtrack-root /data/QuadTrack_test/OmniTrack_Omnidet_test \
   --out-root outputs/quadtrack_debug \
+  --projection cylinder \
   --vertical-fov-deg 120 \
   --variants target_north_55 \
   --edge-samples 16 \
@@ -381,6 +394,7 @@ python -B tools/convert_quadtrack_to_orientation_benchmark.py \
   --out-root outputs/quadtrack_orientation_benchmark \
   --image-width 2048 \
   --image-height 480 \
+  --projection cylinder \
   --vertical-fov-deg 120 \
   --variants prior_a2b,prior_b2a,polar_up,polar_down,target_north_55,target_south_55 \
   --edge-samples 32
@@ -393,6 +407,7 @@ python -B tools/convert_quadtrack_to_orientation_benchmark.py \
   --quadtrack-root /data/QuadTrack_test/OmniTrack_Omnidet_test \
   --image-root /data/QuadTrack_test/images \
   --out-root outputs/quadtrack_orientation_benchmark \
+  --projection cylinder \
   --vertical-fov-deg 120 \
   --variants target_north_55,target_south_55 \
   --edge-samples 64 \

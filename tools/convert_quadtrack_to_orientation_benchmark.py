@@ -75,7 +75,7 @@ class Detection:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Convert QuadTrack/MOT detections to a spherical-rotation oriented benchmark.",
+        description="Convert QuadTrack/MOT detections to a projection-aware SO(3) oriented benchmark.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Examples:
   # QuadTrack default layout: <root>/detection_results_mot/*.txt
@@ -83,6 +83,7 @@ def parse_args() -> argparse.Namespace:
     --quadtrack-root /data/QuadTrack_test/OmniTrack_Omnidet_test \\
     --out-root outputs/quadtrack_orientation_benchmark \\
     --image-width 2048 --image-height 480 \\
+    --projection cylinder \\
     --vertical-fov-deg 120 \\
     --variants prior_a2b,polar_up,target_north_55
 
@@ -90,6 +91,7 @@ def parse_args() -> argparse.Namespace:
   python -B tools/convert_quadtrack_to_orientation_benchmark.py \\
     --quadtrack-root /data/QuadTrack_test/OmniTrack_Omnidet_test \\
     --out-root outputs/quadtrack_orientation_benchmark \\
+    --projection cylinder \\
     --vertical-fov-deg 120 \\
     --mot-frame-to-image-offset 0
 
@@ -97,6 +99,7 @@ def parse_args() -> argparse.Namespace:
   python -B tools/convert_quadtrack_to_orientation_benchmark.py \\
     --quadtrack-root /data/QuadTrack/test \\
     --out-root outputs/quadtrack_orientation_benchmark \\
+    --projection cylinder \\
     --vertical-fov-deg 120 \\
     --variants prior_a2b,polar_up,target_north_55
 """,
@@ -158,7 +161,7 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=2048,
         help=(
-            "ERP panorama width used for label-only conversion. If --image-root is "
+            "Panorama width used for label-only conversion. If --image-root is "
             "provided and images can be read, the real image size is used instead."
         ),
     )
@@ -167,8 +170,19 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=480,
         help=(
-            "ERP panorama height used for label-only conversion. Must match the "
+            "Panorama height used for label-only conversion. Must match the "
             "coordinate system of the input boxes."
+        ),
+    )
+    parser.add_argument(
+        "--projection",
+        choices=["erp", "cylinder"],
+        default="erp",
+        help=(
+            "Panorama projection model used for images and boxes. erp matches "
+            "PriOr-Flow's latitude-linear ERP; use this for the original PriOr-Flow paper geometry. "
+            "cylinder uses x as yaw and y as "
+            "tan(elevation), which is appropriate for cylindrical panoramas."
         ),
     )
     parser.add_argument(
@@ -197,7 +211,7 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=32,
         help=(
-            "Samples per original box side before spherical rotation. Increase to "
+            "Samples per original box side before projection-aware SO(3) rotation. Increase to "
             "64 for very large/polar boxes; 16 is usually enough for quick checks."
         ),
     )
@@ -246,8 +260,8 @@ def parse_args() -> argparse.Namespace:
         choices=["black", "white", "edge"],
         default="black",
         help=(
-            "Fill policy for rotated-image pixels whose source latitude is outside "
-            "the input vertical FOV. black matches PriOr-Flow's grid_sample mask "
+            "Fill policy for rotated-image pixels whose source ray is outside "
+            "the input vertical FOV/elevation range. black matches PriOr-Flow's grid_sample mask "
             "behavior most closely; edge reproduces the old top/bottom row stretch."
         ),
     )
@@ -261,6 +275,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("--image-width and --image-height must be positive")
     if not (0.0 < args.vertical_fov_deg <= 180.0):
         raise SystemExit("--vertical-fov-deg must be in (0, 180]")
+    if args.projection == "cylinder" and args.vertical_fov_deg >= 180.0:
+        raise SystemExit("--projection cylinder requires --vertical-fov-deg < 180 because tan(90deg) is singular")
     if args.edge_samples < 2:
         raise SystemExit("--edge-samples must be >= 2")
     if args.frame_name_width < 1:
@@ -288,7 +304,8 @@ def warn_limited_fov_variants(args: argparse.Namespace, variants: list[str]) -> 
     if args.rotate_images and any(v.strip().lower() in strong for v in variants):
         print(
             "[WARN] PriOr-Flow paper image rotations assume a full 180-degree ERP. "
-            f"With --vertical-fov-deg {args.vertical_fov_deg:g}, some rotated pixels have no "
+            f"With --projection {args.projection} --vertical-fov-deg {args.vertical_fov_deg:g}, "
+            "some rotated pixels have no "
             "source content and will be filled by --invalid-image-fill."
         )
     for variant in variants:
@@ -302,7 +319,7 @@ def warn_limited_fov_variants(args: argparse.Namespace, variants: list[str]) -> 
         if target_deg > half_fov:
             print(
                 "[WARN] "
-                f"{variant} targets latitude {target_deg:g} deg, outside the visible "
+                f"{variant} targets elevation {target_deg:g} deg, outside the visible "
                 f"range +/-{half_fov:g} deg from --vertical-fov-deg {args.vertical_fov_deg:g}. "
                 f"Use target_north_{max(0.0, half_fov - 5.0):g}/target_south_{max(0.0, half_fov - 5.0):g} "
                 "or use --vertical-fov-deg 180 for PriOr-Flow full-ERP behavior."
@@ -610,6 +627,7 @@ def target_pole_rotation(
         width,
         height,
         vertical_fov_rad=vertical_fov_rad(args),
+        projection=args.projection,
     )
     source = source_dirs.mean(axis=0)
     source = source / max(float(np.linalg.norm(source)), 1e-12)
@@ -656,7 +674,7 @@ def obb_to_polygon(cx: float, cy: float, w: float, h: float, angle: float) -> np
 
 
 def rotate_detection(det: Detection, rotation: np.ndarray, width: int, height: int, edge_samples: int) -> dict[str, object]:
-    return rotate_detection_with_projection(det, rotation, width, height, edge_samples, math.pi)
+    return rotate_detection_with_projection(det, rotation, width, height, edge_samples, math.pi, "erp")
 
 
 def rotate_detection_with_projection(
@@ -666,10 +684,19 @@ def rotate_detection_with_projection(
     height: int,
     edge_samples: int,
     vertical_fov: float,
+    projection: str,
 ) -> dict[str, object]:
     x1, y1, x2, y2 = det.xyxy
     edge = sample_xyxy_edges(x1, y1, x2, y2, samples_per_side=edge_samples)
-    raw_rotated = rotate_points(edge, width, height, rotation, vertical_fov_rad=vertical_fov, clip_y=False)
+    raw_rotated = rotate_points(
+        edge,
+        width,
+        height,
+        rotation,
+        vertical_fov_rad=vertical_fov,
+        clip_y=False,
+        projection=projection,
+    )
     vertical_in_fov = bool(np.all((raw_rotated[:, 1] >= 0.0) & (raw_rotated[:, 1] <= float(height - 1))))
     rotated = raw_rotated.copy()
     rotated[:, 1] = np.clip(rotated[:, 1], 0.0, float(height - 1))
@@ -678,7 +705,7 @@ def rotate_detection_with_projection(
     cx, cy, w, h, angle, poly = fit_min_area_rect(unwrapped)
     aabb_x1, aabb_y1, aabb_x2, aabb_y2 = polygon_aabb(poly)
     valid = bool(vertical_in_fov and w > 1.0 and h > 1.0 and np.isfinite(poly).all())
-    distortion = distortion_score_from_y(cy, height, vertical_fov_rad=vertical_fov)
+    distortion = distortion_score_from_y(cy, height, vertical_fov_rad=vertical_fov, projection=projection)
     return {
         "frame": det.frame,
         "object_id": det.object_id,
@@ -860,6 +887,7 @@ def rotate_images_for_sequence(
             rotation,
             vertical_fov_rad=vertical_fov_rad(args),
             clip_y=clip_y,
+            projection=args.projection,
         )
         border_value = (255, 255, 255) if args.invalid_image_fill == "white" else (0, 0, 0)
         remap_image = cv2.copyMakeBorder(image, 0, 0, 1, 1, cv2.BORDER_WRAP)
@@ -907,6 +935,7 @@ def process_sequence(path: Path, input_format: str, args: argparse.Namespace, va
                 height,
                 args.edge_samples,
                 vertical_fov_rad(helper_args),
+                helper_args.projection,
             )
             for det in detections
         ]
@@ -926,6 +955,7 @@ def process_sequence(path: Path, input_format: str, args: argparse.Namespace, va
                 "rotated_images": image_count,
                 "image_width": width,
                 "image_height": height,
+                "projection": helper_args.projection,
                 "vertical_fov_deg": float(helper_args.vertical_fov_deg),
                 "rotation_matrix": rotation.tolist(),
                 "oriented_csv": str(oriented_path),
@@ -970,12 +1000,13 @@ def main() -> None:
     for path in files:
         all_summary.extend(process_sequence(path, input_format, args, variants))
     manifest = {
-        "source": "QuadTrack conversion with PriOr-Flow-style spherical rotation",
+        "source": "QuadTrack conversion with SO(3) panoramic projection rotation",
         "input_format": input_format,
         "quadtrack_root": str(args.quadtrack_root),
         "image_root": str(args.image_root) if args.image_root else None,
         "variants": variants,
         "edge_samples": args.edge_samples,
+        "projection": args.projection,
         "vertical_fov_deg": float(args.vertical_fov_deg),
         "invalid_image_fill": args.invalid_image_fill,
         "input_kind": args.input_kind,

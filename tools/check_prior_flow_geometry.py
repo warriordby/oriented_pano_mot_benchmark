@@ -13,8 +13,10 @@ from src.pano_geometry import (
     lonlat_to_pixels,
     make_equirectangular_remap,
     pixels_to_lonlat,
+    pixel_to_xyz,
     rotate_points,
     rotation_matrix_zyx,
+    xyz_to_pixels,
 )
 
 
@@ -99,10 +101,33 @@ def check_quadtrack_vertical_fov_mapping() -> None:
         raise AssertionError(f"120-degree y mapping roundtrip failed: max_diff={roundtrip}")
 
 
+def check_cylindrical_projection_roundtrip() -> None:
+    width, height = 2048, 480
+    vertical_fov = math.radians(120.0)
+    points = np.array(
+        [[0.0, 0.0], [512.25, 120.5], [1023.5, 239.5], [1700.75, 410.25], [2047.0, 479.0]],
+        dtype=np.float64,
+    )
+    xyz = pixel_to_xyz(
+        points[:, 0],
+        points[:, 1],
+        width,
+        height,
+        vertical_fov_rad=vertical_fov,
+        projection="cylinder",
+    )
+    x2, y2 = xyz_to_pixels(xyz, width, height, vertical_fov_rad=vertical_fov, projection="cylinder")
+    actual = np.stack([x2, y2], axis=1)
+    diff = np.max(np.abs(actual - points))
+    if diff > 1e-9:
+        raise AssertionError(f"cylindrical projection roundtrip failed: max_diff={diff}")
+
+
 def main() -> None:
     check_remap_matches_prior_grid()
     check_label_motion_matches_prior_image_content()
     check_quadtrack_vertical_fov_mapping()
+    check_cylindrical_projection_roundtrip()
     print("PriOr-Flow geometry checks passed.")
 
 
