@@ -105,6 +105,7 @@ python -B tools/convert_quadtrack_to_orientation_benchmark.py \
   --out-root ./outputs/quadtrack_orientation_benchmark \
   --image-width 2048 \
   --image-height 480 \
+  --vertical-fov-deg 120 \
   --variants prior_a2b,polar_up,target_north_80 \
   --edge-samples 32 \
   --input-kind detections
@@ -124,6 +125,7 @@ python -B tools/convert_quadtrack_to_orientation_benchmark.py \
   --out-root ./outputs/quadtrack_orientation_benchmark_with_images \
   --image-width 2048 \
   --image-height 480 \
+  --vertical-fov-deg 120 \
   --variants prior_a2b,polar_up,target_north_80 \
   --edge-samples 32 \
   --input-kind detections \
@@ -162,6 +164,7 @@ python -B tools/convert_quadtrack_to_orientation_benchmark.py \
   --out-root outputs/quadtrack_orientation_benchmark \
   --image-width 2048 \
   --image-height 480 \
+  --vertical-fov-deg 120 \
   --variants prior_a2b,polar_up,target_north_80 \
   --edge-samples 32 \
   --input-kind detections
@@ -177,6 +180,7 @@ python -B tools/convert_quadtrack_to_orientation_benchmark.py \
   --out-root outputs/quadtrack_orientation_benchmark \
   --image-width 2048 \
   --image-height 480 \
+  --vertical-fov-deg 120 \
   --variants target_north_80,target_south_80
 ```
 
@@ -200,6 +204,7 @@ python -B tools/convert_quadtrack_to_orientation_benchmark.py \
   --out-root outputs/quadtrack_orientation_benchmark \
   --image-width 2048 \
   --image-height 480 \
+  --vertical-fov-deg 120 \
   --variants target_north_80
 ```
 
@@ -208,6 +213,9 @@ Common parameter adjustments:
 - `--image-width`, `--image-height`: set these to the panorama resolution used
   by the input boxes. QuadTrack examples here use `2048x480`. If `--image-root`
   is provided and images are readable, the converter uses the real image size.
+- `--vertical-fov-deg`: vertical angular coverage used by the y coordinate.
+  QuadTrack uses `120`; use `180` only when the source image is a full ERP in
+  PriOr-Flow's original vertical convention.
 - `--variants`: choose rotations. `prior_a2b`/`prior_b2a` reproduce
   PriOr-Flow orthogonal rotations; `polar_up`/`polar_down` create fixed strong
   ERP polar distortion; `target_north_80`/`target_south_80` move each sequence's

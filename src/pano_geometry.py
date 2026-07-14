@@ -77,10 +77,11 @@ def pixels_to_lonlat(
     y: np.ndarray,
     width: float,
     height: float,
+    vertical_fov_rad: float = pi,
 ) -> Tuple[np.ndarray, np.ndarray]:
     # Match PriOr-Flow ERP.m2theta / ERP.n2phi: pixel coordinates are centers.
     lon = 2.0 * pi * ((np.asarray(x, dtype=np.float64) + 0.5) / float(width) - 0.5)
-    lat = pi * (0.5 - (np.asarray(y, dtype=np.float64) + 0.5) / float(height))
+    lat = float(vertical_fov_rad) * (0.5 - (np.asarray(y, dtype=np.float64) + 0.5) / float(height))
     return lon, lat
 
 
@@ -89,10 +90,11 @@ def lonlat_to_pixels(
     lat: np.ndarray,
     width: float,
     height: float,
+    vertical_fov_rad: float = pi,
 ) -> Tuple[np.ndarray, np.ndarray]:
     # Match PriOr-Flow ERP.theta2m / ERP.phi2n.
     x = (np.asarray(lon, dtype=np.float64) / (2.0 * pi) + 0.5) * float(width) - 0.5
-    y = (0.5 - np.asarray(lat, dtype=np.float64) / pi) * float(height) - 0.5
+    y = (0.5 - np.asarray(lat, dtype=np.float64) / float(vertical_fov_rad)) * float(height) - 0.5
     return x, y
 
 
@@ -103,8 +105,14 @@ def lonlat_to_xyz(lon: np.ndarray, lat: np.ndarray) -> np.ndarray:
     return np.stack([clat * np.cos(lon), clat * np.sin(lon), np.sin(lat)], axis=-1)
 
 
-def pixel_to_xyz(x: np.ndarray, y: np.ndarray, width: float, height: float) -> np.ndarray:
-    lon, lat = pixels_to_lonlat(x, y, width, height)
+def pixel_to_xyz(
+    x: np.ndarray,
+    y: np.ndarray,
+    width: float,
+    height: float,
+    vertical_fov_rad: float = pi,
+) -> np.ndarray:
+    lon, lat = pixels_to_lonlat(x, y, width, height, vertical_fov_rad=vertical_fov_rad)
     return lonlat_to_xyz(lon, lat)
 
 
@@ -121,22 +129,25 @@ def make_equirectangular_remap(
     width: int,
     height: int,
     rotation: np.ndarray,
+    vertical_fov_rad: float = pi,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Build PriOr-Flow-style remap arrays for cv2.remap.
 
     PriOr-Flow generate_samplegrid applies R to each output ray to obtain the
     source sampling ray. With row-vector numpy arrays this is xyz_out @ R.T.
+    vertical_fov_rad defaults to pi for original full-ERP PriOr-Flow behavior;
+    use 2*pi/3 for QuadTrack's 120-degree vertical coverage.
     """
     yy, xx = np.meshgrid(
         np.arange(height, dtype=np.float64),
         np.arange(width, dtype=np.float64),
         indexing="ij",
     )
-    lon, lat = pixels_to_lonlat(xx, yy, width, height)
+    lon, lat = pixels_to_lonlat(xx, yy, width, height, vertical_fov_rad=vertical_fov_rad)
     xyz_out = lonlat_to_xyz(lon, lat)
     xyz_src = xyz_out @ np.asarray(rotation, dtype=np.float64).T
     src_lon, src_lat = xyz_to_lonlat(xyz_src)
-    map_x, map_y = lonlat_to_pixels(src_lon, src_lat, width, height)
+    map_x, map_y = lonlat_to_pixels(src_lon, src_lat, width, height, vertical_fov_rad=vertical_fov_rad)
     return (
         np.mod(map_x, float(width)).astype(np.float32),
         np.clip(map_y, 0.0, float(height - 1)).astype(np.float32),
@@ -171,6 +182,7 @@ def rotate_points(
     width: int,
     height: int,
     rotation: np.ndarray,
+    vertical_fov_rad: float = pi,
 ) -> np.ndarray:
     """Move source-plane points consistently with PriOr-Flow img_rotate.
 
@@ -178,11 +190,11 @@ def rotate_points(
     output = R.T @ source. With row-vector numpy arrays this is xyz @ R.
     """
     pts = np.asarray(points_xy, dtype=np.float64)
-    lon, lat = pixels_to_lonlat(pts[:, 0], pts[:, 1], width, height)
+    lon, lat = pixels_to_lonlat(pts[:, 0], pts[:, 1], width, height, vertical_fov_rad=vertical_fov_rad)
     xyz = lonlat_to_xyz(lon, lat)
     rotated = xyz @ np.asarray(rotation, dtype=np.float64)
     out_lon, out_lat = xyz_to_lonlat(rotated)
-    out_x, out_y = lonlat_to_pixels(out_lon, out_lat, width, height)
+    out_x, out_y = lonlat_to_pixels(out_lon, out_lat, width, height, vertical_fov_rad=vertical_fov_rad)
     return np.stack(
         [np.mod(out_x, float(width)), np.clip(out_y, 0.0, float(height - 1))],
         axis=1,
@@ -195,8 +207,9 @@ def rotate_points_unwrapped(
     height: int,
     rotation: np.ndarray,
     reference_x: float | None = None,
+    vertical_fov_rad: float = pi,
 ) -> np.ndarray:
-    rotated = rotate_points(points_xy, width, height, rotation)
+    rotated = rotate_points(points_xy, width, height, rotation, vertical_fov_rad=vertical_fov_rad)
     return unwrap_x(rotated, width, reference_x=reference_x)
 
 
@@ -262,16 +275,28 @@ def rotate_xyxy_to_obb(
     height: int,
     rotation: np.ndarray,
     samples_per_side: int = 24,
+    vertical_fov_rad: float = pi,
 ) -> Tuple[OrientedBox, np.ndarray, Tuple[float, float, float, float]]:
     """Rotate an image-plane AABB on the sphere and fit an output OBB."""
     x1, y1, x2, y2 = [float(v) for v in xyxy]
     edge_points = sample_xyxy_edges(x1, y1, x2, y2, samples_per_side=samples_per_side)
-    rotated_points = rotate_points(edge_points, width, height, rotation)
+    rotated_points = rotate_points(edge_points, width, height, rotation, vertical_fov_rad=vertical_fov_rad)
     unwrapped = unwrap_x(rotated_points, width)
     return pca_oriented_box(unwrapped), unwrapped, polygon_aabb(unwrapped)
 
 
-def distortion_score_from_y(y: float, height: int, floor: float = 0.05) -> float:
+def distortion_score_from_y(
+    y: float,
+    height: int,
+    floor: float = 0.05,
+    vertical_fov_rad: float = pi,
+) -> float:
     """ERP horizontal stretching grows as 1 / cos(latitude)."""
-    _, lat = pixels_to_lonlat(np.asarray([0.0]), np.asarray([y]), 1.0, float(height))
+    _, lat = pixels_to_lonlat(
+        np.asarray([0.0]),
+        np.asarray([y]),
+        1.0,
+        float(height),
+        vertical_fov_rad=vertical_fov_rad,
+    )
     return float(1.0 / max(float(np.cos(abs(lat[0]))), float(floor)))

@@ -83,18 +83,21 @@ def parse_args() -> argparse.Namespace:
     --quadtrack-root /data/QuadTrack_test/OmniTrack_Omnidet_test \\
     --out-root outputs/quadtrack_orientation_benchmark \\
     --image-width 2048 --image-height 480 \\
+    --vertical-fov-deg 120 \\
     --variants prior_a2b,polar_up,target_north_80
 
   # If image files are named 000001.jpg instead of 000000.jpg for frame 1:
   python -B tools/convert_quadtrack_to_orientation_benchmark.py \\
     --quadtrack-root /data/QuadTrack_test/OmniTrack_Omnidet_test \\
     --out-root outputs/quadtrack_orientation_benchmark \\
+    --vertical-fov-deg 120 \\
     --mot-frame-to-image-offset 0
 
   # Official MOTChallenge/DanceTrack-like layout: <root>/<sequence>/seqinfo.ini, img1, gt or det
   python -B tools/convert_quadtrack_to_orientation_benchmark.py \\
     --quadtrack-root /data/QuadTrack/test \\
     --out-root outputs/quadtrack_orientation_benchmark \\
+    --vertical-fov-deg 120 \\
     --variants prior_a2b,polar_up,target_north_80
 """,
     )
@@ -169,6 +172,15 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--vertical-fov-deg",
+        type=float,
+        default=120.0,
+        help=(
+            "Vertical angular coverage of the panorama image. QuadTrack uses 120 deg. "
+            "Use 180 for original full-ERP PriOr-Flow behavior."
+        ),
+    )
+    parser.add_argument(
         "--variants",
         default="prior_a2b,polar_up,target_north_80",
         help=(
@@ -236,6 +248,8 @@ def parse_args() -> argparse.Namespace:
 def validate_args(args: argparse.Namespace) -> None:
     if args.image_width <= 0 or args.image_height <= 0:
         raise SystemExit("--image-width and --image-height must be positive")
+    if not (0.0 < args.vertical_fov_deg <= 180.0):
+        raise SystemExit("--vertical-fov-deg must be in (0, 180]")
     if args.edge_samples < 2:
         raise SystemExit("--edge-samples must be >= 2")
     if args.frame_name_width < 1:
@@ -249,6 +263,10 @@ def normalize_ext(ext: str) -> str:
     if not ext:
         return ".jpg"
     return ext if ext.startswith(".") else f".{ext}"
+
+
+def vertical_fov_rad(args: argparse.Namespace) -> float:
+    return math.radians(float(getattr(args, "vertical_fov_deg", 180.0)))
 
 
 def mot_files(det_root: Path, seq_glob: str | None = None) -> list[Path]:
@@ -528,11 +546,17 @@ def variant_rotation(name: str, detections: list[Detection], width: int, height:
             math.radians(args.roll_deg),
         )
     if key.startswith("target_north_") or key.startswith("target_south_"):
-        return target_pole_rotation(key, detections, width, height)
+        return target_pole_rotation(key, detections, width, height, args)
     raise ValueError(f"unknown rotation variant: {name}")
 
 
-def target_pole_rotation(key: str, detections: list[Detection], width: int, height: int) -> np.ndarray:
+def target_pole_rotation(
+    key: str,
+    detections: list[Detection],
+    width: int,
+    height: int,
+    args: argparse.Namespace,
+) -> np.ndarray:
     centers = []
     for det in detections:
         x1, y1, x2, y2 = det.xyxy
@@ -540,7 +564,13 @@ def target_pole_rotation(key: str, detections: list[Detection], width: int, heig
     if not centers:
         return np.eye(3, dtype=np.float64)
     centers_arr = np.asarray(centers, dtype=np.float64)
-    source_dirs = pixel_to_xyz(centers_arr[:, 0], centers_arr[:, 1], width, height)
+    source_dirs = pixel_to_xyz(
+        centers_arr[:, 0],
+        centers_arr[:, 1],
+        width,
+        height,
+        vertical_fov_rad=vertical_fov_rad(args),
+    )
     source = source_dirs.mean(axis=0)
     source = source / max(float(np.linalg.norm(source)), 1e-12)
     degrees = float(key.rsplit("_", 1)[-1])
@@ -586,15 +616,26 @@ def obb_to_polygon(cx: float, cy: float, w: float, h: float, angle: float) -> np
 
 
 def rotate_detection(det: Detection, rotation: np.ndarray, width: int, height: int, edge_samples: int) -> dict[str, object]:
+    return rotate_detection_with_projection(det, rotation, width, height, edge_samples, math.pi)
+
+
+def rotate_detection_with_projection(
+    det: Detection,
+    rotation: np.ndarray,
+    width: int,
+    height: int,
+    edge_samples: int,
+    vertical_fov: float,
+) -> dict[str, object]:
     x1, y1, x2, y2 = det.xyxy
     edge = sample_xyxy_edges(x1, y1, x2, y2, samples_per_side=edge_samples)
-    rotated = rotate_points(edge, width, height, rotation)
+    rotated = rotate_points(edge, width, height, rotation, vertical_fov_rad=vertical_fov)
     seam_crossing = bool(np.ptp(rotated[:, 0]) > width * 0.5)
     unwrapped = unwrap_x(rotated, width)
     cx, cy, w, h, angle, poly = fit_min_area_rect(unwrapped)
     aabb_x1, aabb_y1, aabb_x2, aabb_y2 = polygon_aabb(poly)
     valid = bool(w > 1.0 and h > 1.0 and np.isfinite(poly).all())
-    distortion = distortion_score_from_y(cy, height)
+    distortion = distortion_score_from_y(cy, height, vertical_fov_rad=vertical_fov)
     return {
         "frame": det.frame,
         "object_id": det.object_id,
@@ -768,7 +809,7 @@ def rotate_images_for_sequence(
             continue
         height, width = image.shape[:2]
         actual_size = (width, height)
-        map_x, map_y = make_equirectangular_remap(width, height, rotation)
+        map_x, map_y = make_equirectangular_remap(width, height, rotation, vertical_fov_rad=vertical_fov_rad(args))
         rotated = cv2.remap(image, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_WRAP)
         dst = out_dir / (Path(det.frame_file).stem + args.image_ext)
         cv2.imwrite(str(dst), rotated)
@@ -798,7 +839,17 @@ def process_sequence(path: Path, input_format: str, args: argparse.Namespace, va
             )
             warned_no_images = True
         width, height = image_size
-        records = [rotate_detection(det, rotation, width, height, args.edge_samples) for det in detections]
+        records = [
+            rotate_detection_with_projection(
+                det,
+                rotation,
+                width,
+                height,
+                args.edge_samples,
+                vertical_fov_rad(helper_args),
+            )
+            for det in detections
+        ]
         oriented_path = args.out_root / args.input_kind / "oriented_csv" / variant / f"{seq}.csv"
         aabb_path = args.out_root / args.input_kind / "mot_aabb" / variant / f"{seq}.txt"
         oriented_count = write_csv(oriented_path, ORIENTED_HEADER, (oriented_row(r) for r in records))
@@ -813,6 +864,7 @@ def process_sequence(path: Path, input_format: str, args: argparse.Namespace, va
                 "rotated_images": image_count,
                 "image_width": width,
                 "image_height": height,
+                "vertical_fov_deg": float(helper_args.vertical_fov_deg),
                 "rotation_matrix": rotation.tolist(),
                 "oriented_csv": str(oriented_path),
                 "mot_aabb": str(aabb_path),
@@ -861,6 +913,7 @@ def main() -> None:
         "image_root": str(args.image_root) if args.image_root else None,
         "variants": variants,
         "edge_samples": args.edge_samples,
+        "vertical_fov_deg": float(args.vertical_fov_deg),
         "input_kind": args.input_kind,
         "label_source": args.label_source,
         "min_score": args.min_score,

@@ -27,6 +27,12 @@ PriOr-Flow pixel-center ERP coordinate
   -> PriOr-Flow pixel-center ERP coordinate
 ```
 
+For original PriOr-Flow full-ERP geometry, the vertical coverage is 180 degrees.
+For QuadTrack, the image y axis covers 120 degrees, so use
+`--vertical-fov-deg 120`. The OBB path still uses the PriOr-Flow-style logic:
+sample box edges, lift samples to the unit sphere, rotate/reproject them, then
+fit an oriented box to the rotated samples.
+
 For images, the converter follows PriOr-Flow `generate_samplegrid`: for each
 output pixel, rotate the output ray by `R` to find the source pixel. Therefore
 visible image content moves by `R.T`. Labels are moved with that same visible
@@ -70,6 +76,7 @@ python -B tools/convert_quadtrack_to_orientation_benchmark.py \
   --out-root ./outputs/quadtrack_orientation_benchmark \
   --image-width 2048 \
   --image-height 480 \
+  --vertical-fov-deg 120 \
   --variants prior_a2b,polar_up,target_north_80 \
   --edge-samples 32 \
   --input-kind detections
@@ -88,6 +95,7 @@ python -B tools/convert_quadtrack_to_orientation_benchmark.py \
   --out-root ./outputs/quadtrack_orientation_benchmark_with_images \
   --image-width 2048 \
   --image-height 480 \
+  --vertical-fov-deg 120 \
   --variants prior_a2b,polar_up,target_north_80 \
   --edge-samples 32 \
   --input-kind detections \
@@ -149,6 +157,7 @@ py -B tools\convert_quadtrack_to_orientation_benchmark.py `
   --out-root outputs\quadtrack_orientation_benchmark `
   --image-width 2048 `
   --image-height 480 `
+  --vertical-fov-deg 120 `
   --variants prior_a2b,polar_up,target_north_80 `
   --edge-samples 32 `
   --input-kind detections
@@ -162,6 +171,7 @@ python -B tools/convert_quadtrack_to_orientation_benchmark.py \
   --out-root outputs/quadtrack_orientation_benchmark \
   --image-width 2048 \
   --image-height 480 \
+  --vertical-fov-deg 120 \
   --variants prior_a2b,polar_up,target_north_80 \
   --edge-samples 32 \
   --input-kind detections
@@ -177,6 +187,7 @@ python -B tools/convert_quadtrack_to_orientation_benchmark.py \
   --out-root outputs/quadtrack_orientation_benchmark \
   --image-width 2048 \
   --image-height 480 \
+  --vertical-fov-deg 120 \
   --variants target_north_80,target_south_80
 ```
 
@@ -201,6 +212,7 @@ python -B tools/convert_quadtrack_to_orientation_benchmark.py \
   --out-root outputs/quadtrack_orientation_benchmark \
   --image-width 2048 \
   --image-height 480 \
+  --vertical-fov-deg 120 \
   --variants target_north_80
 ```
 
@@ -210,6 +222,7 @@ For a quick debugging run:
 python -B tools/convert_quadtrack_to_orientation_benchmark.py \
   --quadtrack-root /data/QuadTrack_test/OmniTrack_Omnidet_test \
   --out-root outputs/quadtrack_orientation_debug \
+  --vertical-fov-deg 120 \
   --variants custom \
   --yaw-deg 0 \
   --pitch-deg 60 \
@@ -271,6 +284,7 @@ rotations create the severe ERP stretching needed by an orientation benchmark.
 | `--seq-glob` | Glob used to select sequence files. | Use for partial conversion, e.g. `--seq-glob 'scene_*.txt'`. |
 | `--out-root` | Output benchmark root. | Use a new folder for each experiment setting to avoid mixing variants. |
 | `--image-width`, `--image-height` | ERP resolution used for label-only geometry. | Must match the coordinate system of the boxes. For QuadTrack examples use `2048x480`; change if your exported boxes use another resolution. |
+| `--vertical-fov-deg` | Vertical angular coverage represented by image y. | Use `120` for QuadTrack. Use `180` only for original full-ERP PriOr-Flow geometry. |
 | `--image-root` | Optional root of original panorama images. | Needed for `--rotate-images`; also lets the script infer real image size when images are readable. |
 | `--rotate-images` | Writes rotated ERP images with the same spherical transform used for labels. | Enable when you want a complete image+label benchmark. Omit for faster label-only conversion. |
 | `--variants` | Comma-separated rotation variants. | Use `target_north_80,target_south_80` for the strongest polar distortion; add `prior_a2b,prior_b2a` to reproduce PriOr-Flow orthogonal rotations. |
@@ -334,6 +348,7 @@ Fast geometry check:
 python -B tools/convert_quadtrack_to_orientation_benchmark.py \
   --quadtrack-root /data/QuadTrack_test/OmniTrack_Omnidet_test \
   --out-root outputs/quadtrack_debug \
+  --vertical-fov-deg 120 \
   --variants target_north_80 \
   --edge-samples 16 \
   --limit-seqs 1 \
@@ -348,6 +363,7 @@ python -B tools/convert_quadtrack_to_orientation_benchmark.py \
   --out-root outputs/quadtrack_orientation_benchmark \
   --image-width 2048 \
   --image-height 480 \
+  --vertical-fov-deg 120 \
   --variants prior_a2b,prior_b2a,polar_up,polar_down,target_north_80,target_south_80 \
   --edge-samples 32
 ```
@@ -359,6 +375,7 @@ python -B tools/convert_quadtrack_to_orientation_benchmark.py \
   --quadtrack-root /data/QuadTrack_test/OmniTrack_Omnidet_test \
   --image-root /data/QuadTrack_test/images \
   --out-root outputs/quadtrack_orientation_benchmark \
+  --vertical-fov-deg 120 \
   --variants target_north_80,target_south_80 \
   --edge-samples 64 \
   --mot-frame-to-image-offset 0 \

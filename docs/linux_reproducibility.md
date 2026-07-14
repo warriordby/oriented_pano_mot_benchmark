@@ -53,6 +53,7 @@ python -B tools/convert_quadtrack_to_orientation_benchmark.py \
   --out-root outputs/quadtrack_orientation_benchmark \
   --image-width 2048 \
   --image-height 480 \
+  --vertical-fov-deg 120 \
   --variants prior_a2b,polar_up,target_north_80 \
   --edge-samples 32 \
   --input-kind detections
@@ -87,4 +88,3 @@ python -B tools/convert_dancetrack_to_orientation_benchmark.py \
 
 Generated files are written under `outputs/` by default and are ignored by git.
 Do not commit converted datasets or downloaded third-party repositories.
-

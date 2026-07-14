@@ -9,7 +9,13 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from src.pano_geometry import make_equirectangular_remap, rotate_points, rotation_matrix_zyx
+from src.pano_geometry import (
+    lonlat_to_pixels,
+    make_equirectangular_remap,
+    pixels_to_lonlat,
+    rotate_points,
+    rotation_matrix_zyx,
+)
 
 
 def prior_pixels_to_xyz(points_xy: np.ndarray, width: int, height: int) -> np.ndarray:
@@ -69,9 +75,34 @@ def check_label_motion_matches_prior_image_content() -> None:
         raise AssertionError(f"label motion differs from PriOr-Flow content motion: max_diff={diff}")
 
 
+def check_quadtrack_vertical_fov_mapping() -> None:
+    width, height = 2048, 480
+    vertical_fov = math.radians(120.0)
+    _, lat = pixels_to_lonlat(
+        np.asarray([0.0, 0.0, 0.0]),
+        np.asarray([0.0, (height - 1.0) * 0.5, height - 1.0]),
+        width,
+        height,
+        vertical_fov_rad=vertical_fov,
+    )
+    expected = np.radians([59.875, 0.0, -59.875])
+    diff = np.max(np.abs(lat - expected))
+    if diff > 1e-9:
+        raise AssertionError(f"120-degree y mapping differs from expected latitudes: max_diff={diff}")
+
+    lon = np.asarray([0.0, math.pi / 3.0, -math.pi / 3.0])
+    test_lat = np.radians([-60.0, 0.0, 60.0])
+    x, y = lonlat_to_pixels(lon, test_lat, width, height, vertical_fov_rad=vertical_fov)
+    lon2, lat2 = pixels_to_lonlat(x, y, width, height, vertical_fov_rad=vertical_fov)
+    roundtrip = max(float(np.max(np.abs(lon2 - lon))), float(np.max(np.abs(lat2 - test_lat))))
+    if roundtrip > 1e-9:
+        raise AssertionError(f"120-degree y mapping roundtrip failed: max_diff={roundtrip}")
+
+
 def main() -> None:
     check_remap_matches_prior_grid()
     check_label_motion_matches_prior_image_content()
+    check_quadtrack_vertical_fov_mapping()
     print("PriOr-Flow geometry checks passed.")
 
 
