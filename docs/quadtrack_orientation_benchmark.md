@@ -71,6 +71,28 @@ the converter cannot create oriented boxes because there are no boxes to rotate.
 In that case, first export detections to each sequence's `det/det.txt`, or run
 the converter on a split that provides `gt/gt.txt`.
 
+To rotate both labels and images:
+
+```bash
+python -B tools/convert_quadtrack_to_orientation_benchmark.py \
+  --quadtrack-root ../QuadTrack/test \
+  --out-root ./outputs/quadtrack_orientation_benchmark_with_images \
+  --image-width 2048 \
+  --image-height 480 \
+  --variants prior_a2b,polar_up,target_north_80 \
+  --edge-samples 32 \
+  --input-kind detections \
+  --rotate-images
+```
+
+For sequence folders, the converter scans real source images under
+`<sequence>/<imDir>`, `<sequence>/img1`, and `<sequence>/images`. Numeric image
+names are matched automatically:
+
+- `000000.jpg` is treated as frame 1 when the sequence starts at 0.
+- `000001.jpg` is treated as frame 1 when the sequence starts at 1.
+- `00000001.jpg` and PNG/JPEG variants are also accepted when present.
+
 ### MOT txt
 
 Default layout:
@@ -274,6 +296,24 @@ find ../QuadTrack/test -maxdepth 3 \( -path '*/gt/gt.txt' -o -path '*/det/det.tx
 
 If it prints only `seqinfo.ini` files, the split is image-only. The converter
 needs boxes, so add `det/det.txt` files or switch to a labeled split.
+
+If `--rotate-images` runs but every line still says `images=0`, the labels were
+converted but source images were not found or could not be decoded by OpenCV.
+Check the image folders:
+
+```bash
+find ../QuadTrack/test -maxdepth 3 \( -path '*/img1/*' -o -path '*/images/*' \) | head -30
+```
+
+Also check one sequence's `seqinfo.ini`:
+
+```bash
+cat ../QuadTrack/test/0000/seqinfo.ini
+find ../QuadTrack/test/0000 -maxdepth 2 -type f | head -20
+```
+
+The script prints a warning with `image_root`, `first_frame`, and
+`first_frame_file` when `--rotate-images` cannot write any image for a sequence.
 
 ## Practical Settings
 

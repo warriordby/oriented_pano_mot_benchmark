@@ -111,6 +111,30 @@ official `test` split contains only `img1` images and no box file, there is
 nothing to rotate yet; run a detector/tracker export into `det/det.txt`, or use
 a split that includes `gt/gt.txt`.
 
+To also rotate images, add `--rotate-images`:
+
+```bash
+python -B tools/convert_quadtrack_to_orientation_benchmark.py \
+  --quadtrack-root ../QuadTrack/test \
+  --out-root ./outputs/quadtrack_orientation_benchmark_with_images \
+  --image-width 2048 \
+  --image-height 480 \
+  --variants prior_a2b,polar_up,target_north_80 \
+  --edge-samples 32 \
+  --input-kind detections \
+  --rotate-images
+```
+
+For official sequence folders, the converter now scans the real files under
+`<sequence>/<imDir>`, `<sequence>/img1`, or `<sequence>/images`, so it can handle
+both zero-based names such as `000000.jpg` and one-based names such as
+`000001.jpg`. If `--rotate-images` still reports `images=0`, verify that images
+exist and are readable:
+
+```bash
+find ../QuadTrack/test -maxdepth 3 \( -path '*/img1/*' -o -path '*/images/*' \) | head
+```
+
 The default QuadTrack path expected by the converter is:
 
 ```text

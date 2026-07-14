@@ -60,6 +60,8 @@ ORIENTED_HEADER = [
     "valid",
 ]
 
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+
 
 @dataclass(frozen=True)
 class Detection:
@@ -323,6 +325,55 @@ def motchallenge_frame_file(frame: int, seqinfo: dict[str, str]) -> str:
     return f"{frame:0{name_length}d}{im_ext}"
 
 
+def motchallenge_image_index(seq_dir: Path, seqinfo: dict[str, str]) -> dict[int, str]:
+    im_dir = seqinfo.get("imDir", "img1") or "img1"
+    image_dirs: list[tuple[Path, Path]] = []
+    seen: set[Path] = set()
+    for rel in [Path(im_dir), Path("img1"), Path("images")]:
+        image_dir = seq_dir / rel
+        if image_dir.exists() and image_dir.is_dir() and image_dir not in seen:
+            image_dirs.append((rel, image_dir))
+            seen.add(image_dir)
+    if not image_dirs:
+        return {}
+
+    im_ext = normalize_ext(seqinfo.get("imExt", ".jpg") or ".jpg").lower()
+
+    rel_dir, image_dir = image_dirs[0]
+    files: list[Path] = []
+    for candidate_rel, candidate_dir in image_dirs:
+        candidate_files = sorted(
+            p
+            for p in candidate_dir.iterdir()
+            if p.is_file() and (p.suffix.lower() == im_ext or p.suffix.lower() in IMAGE_EXTENSIONS)
+        )
+        if candidate_files:
+            rel_dir, image_dir, files = candidate_rel, candidate_dir, candidate_files
+            break
+    if not files:
+        return {}
+
+    numeric: list[tuple[int, Path]] = []
+    for path in files:
+        try:
+            numeric.append((int(path.stem), path))
+        except ValueError:
+            continue
+
+    mapping: dict[int, str] = {}
+    if numeric:
+        offset = 1 if min(value for value, _ in numeric) == 0 else 0
+        for value, path in numeric:
+            mapping[value + offset] = str(rel_dir / path.name)
+            if offset == 1:
+                mapping.setdefault(value, str(rel_dir / path.name))
+        return mapping
+
+    for frame, path in enumerate(files, start=1):
+        mapping[frame] = str(rel_dir / path.name)
+    return mapping
+
+
 def load_mot_file(path: Path, args: argparse.Namespace) -> list[Detection]:
     rows: list[Detection] = []
     with path.open("r", encoding="utf-8") as f:
@@ -360,6 +411,7 @@ def load_motchallenge_sequence(seq_dir: Path, args: argparse.Namespace) -> list[
     if source is None or path is None:
         return []
     seqinfo = read_seqinfo(seq_dir)
+    image_index = motchallenge_image_index(seq_dir, seqinfo)
     rows: list[Detection] = []
     with path.open("r", encoding="utf-8") as f:
         for line in f:
@@ -383,7 +435,7 @@ def load_motchallenge_sequence(seq_dir: Path, args: argparse.Namespace) -> list[
                     class_name=args.mot_class_name,
                     xyxy=(x, y, x + w, y + h),
                     score=score,
-                    frame_file=motchallenge_frame_file(frame, seqinfo),
+                    frame_file=image_index.get(frame, motchallenge_frame_file(frame, seqinfo)),
                 )
             )
     return rows
@@ -624,15 +676,20 @@ def write_mot_txt(path: Path, rows: Iterable[Iterable[object]]) -> int:
 
 
 def find_image(image_root: Path, seq: str, frame_file: str, frame: int) -> Path | None:
+    frame_path = Path(frame_file)
     candidates = [
-        image_root / seq / frame_file,
-        image_root / seq / "img1" / frame_file,
-        image_root / seq / "images" / frame_file,
-        image_root / "img1" / frame_file,
-        image_root / "images" / frame_file,
-        image_root / frame_file,
+        image_root / seq / frame_path,
+        image_root / seq / "img1" / frame_path,
+        image_root / seq / "images" / frame_path,
+        image_root / "img1" / frame_path,
+        image_root / "images" / frame_path,
+        image_root / frame_path,
         image_root / seq / f"{max(frame - 1, 0):06d}.jpg",
         image_root / seq / f"{max(frame - 1, 0):06d}.png",
+        image_root / seq / "img1" / f"{max(frame - 1, 0):06d}.jpg",
+        image_root / seq / "img1" / f"{frame:06d}.jpg",
+        image_root / seq / "img1" / f"{frame:08d}.jpg",
+        image_root / seq / "img1" / f"{frame:08d}.png",
         image_root / f"{seq}_{max(frame - 1, 0):06d}.jpg",
     ]
     for candidate in candidates:
@@ -724,9 +781,19 @@ def process_sequence(path: Path, input_format: str, args: argparse.Namespace, va
         detections = [d for d in detections if d.frame <= args.limit_frames]
     base_size = infer_sequence_image_size(detections, seq, helper_args)
     summary: list[dict[str, object]] = []
+    warned_no_images = False
     for variant in variants:
         rotation = variant_rotation(variant, detections, base_size[0], base_size[1], helper_args)
         image_count, image_size = rotate_images_for_sequence(detections, rotation, seq, variant, helper_args, base_size)
+        if helper_args.rotate_images and image_count == 0 and detections and not warned_no_images:
+            first = min(detections, key=lambda item: item.frame)
+            print(
+                "[WARN] "
+                f"{seq}: no source images were found/read for --rotate-images. "
+                f"image_root={helper_args.image_root}, first_frame={first.frame}, "
+                f"first_frame_file={first.frame_file}"
+            )
+            warned_no_images = True
         width, height = image_size
         records = [rotate_detection(det, rotation, width, height, args.edge_samples) for det in detections]
         oriented_path = args.out_root / args.input_kind / "oriented_csv" / variant / f"{seq}.csv"
