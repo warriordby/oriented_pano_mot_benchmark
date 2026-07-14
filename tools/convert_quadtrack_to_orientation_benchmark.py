@@ -548,7 +548,10 @@ def target_pole_rotation(key: str, detections: list[Detection], width: int, heig
     if key.startswith("target_south_"):
         lat = -lat
     target = np.array([math.cos(lat), 0.0, math.sin(lat)], dtype=np.float64)
-    return rotation_between_vectors(source, target)
+    # PriOr-Flow img_rotate uses source = R @ output, so image content moves as
+    # output = R.T @ source. To place source near target in the output image,
+    # choose R such that R.T @ source = target, equivalently R @ target = source.
+    return rotation_between_vectors(target, source)
 
 
 def fit_min_area_rect(points_unwrapped: np.ndarray) -> tuple[float, float, float, float, float, np.ndarray]:

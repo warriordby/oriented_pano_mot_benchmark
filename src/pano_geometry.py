@@ -78,8 +78,9 @@ def pixels_to_lonlat(
     width: float,
     height: float,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    lon = 2.0 * pi * (np.asarray(x, dtype=np.float64) / float(width) - 0.5)
-    lat = pi * (0.5 - np.asarray(y, dtype=np.float64) / float(height))
+    # Match PriOr-Flow ERP.m2theta / ERP.n2phi: pixel coordinates are centers.
+    lon = 2.0 * pi * ((np.asarray(x, dtype=np.float64) + 0.5) / float(width) - 0.5)
+    lat = pi * (0.5 - (np.asarray(y, dtype=np.float64) + 0.5) / float(height))
     return lon, lat
 
 
@@ -89,8 +90,9 @@ def lonlat_to_pixels(
     width: float,
     height: float,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    x = (np.asarray(lon, dtype=np.float64) / (2.0 * pi) + 0.5) * float(width)
-    y = (0.5 - np.asarray(lat, dtype=np.float64) / pi) * float(height)
+    # Match PriOr-Flow ERP.theta2m / ERP.phi2n.
+    x = (np.asarray(lon, dtype=np.float64) / (2.0 * pi) + 0.5) * float(width) - 0.5
+    y = (0.5 - np.asarray(lat, dtype=np.float64) / pi) * float(height) - 0.5
     return x, y
 
 
@@ -120,9 +122,10 @@ def make_equirectangular_remap(
     height: int,
     rotation: np.ndarray,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Build remap arrays for cv2.remap.
+    """Build PriOr-Flow-style remap arrays for cv2.remap.
 
-    For every output ray v_out, the source ray is R.T @ v_out.
+    PriOr-Flow generate_samplegrid applies R to each output ray to obtain the
+    source sampling ray. With row-vector numpy arrays this is xyz_out @ R.T.
     """
     yy, xx = np.meshgrid(
         np.arange(height, dtype=np.float64),
@@ -131,7 +134,7 @@ def make_equirectangular_remap(
     )
     lon, lat = pixels_to_lonlat(xx, yy, width, height)
     xyz_out = lonlat_to_xyz(lon, lat)
-    xyz_src = xyz_out @ np.asarray(rotation, dtype=np.float64)
+    xyz_src = xyz_out @ np.asarray(rotation, dtype=np.float64).T
     src_lon, src_lat = xyz_to_lonlat(xyz_src)
     map_x, map_y = lonlat_to_pixels(src_lon, src_lat, width, height)
     return (
@@ -169,10 +172,15 @@ def rotate_points(
     height: int,
     rotation: np.ndarray,
 ) -> np.ndarray:
+    """Move source-plane points consistently with PriOr-Flow img_rotate.
+
+    PriOr-Flow samples source = R @ output, so visible image content moves as
+    output = R.T @ source. With row-vector numpy arrays this is xyz @ R.
+    """
     pts = np.asarray(points_xy, dtype=np.float64)
     lon, lat = pixels_to_lonlat(pts[:, 0], pts[:, 1], width, height)
     xyz = lonlat_to_xyz(lon, lat)
-    rotated = xyz @ np.asarray(rotation, dtype=np.float64).T
+    rotated = xyz @ np.asarray(rotation, dtype=np.float64)
     out_lon, out_lat = xyz_to_lonlat(rotated)
     out_x, out_y = lonlat_to_pixels(out_lon, out_lat, width, height)
     return np.stack(

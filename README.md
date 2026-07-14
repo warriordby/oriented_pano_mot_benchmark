@@ -3,9 +3,11 @@
 This repository provides spherical rotation tools for building oriented
 multi-object tracking benchmarks from panoramic datasets.
 
-The implementation follows the geometry used by PriOr-Flow-style panoramic
-projection: pixels are mapped to longitude/latitude, lifted to the unit sphere,
-rotated with SO(3), and projected back to equirectangular image coordinates.
+The implementation follows PriOr-Flow-style panoramic projection: PriOr-Flow
+pixel-center ERP coordinates are mapped to longitude/latitude, lifted to the
+unit sphere, rotated with SO(3), and projected back to equirectangular image
+coordinates. Image remapping follows PriOr-Flow `generate_samplegrid`: each
+output ray is rotated to locate the source pixel.
 
 It supports:
 
@@ -27,13 +29,16 @@ It supports:
 - `configs/quadtrack_orientation.example.ps1`: Windows QuadTrack example.
 - `configs/dancetrack_orientation.example.sh`: Linux DanceTrack example.
 - `tools/smoke_test_geometry.py`: small geometry smoke test.
+- `tools/check_prior_flow_geometry.py`: checks geometry against PriOr-Flow's ERP/sample-grid convention.
 - `tools/convert_quadtrack_to_orientation_benchmark.py`: QuadTrack converter.
 - `tools/convert_dancetrack_to_orientation_benchmark.py`: DanceTrack converter.
+- `tools/visualize_orientation_benchmark.py`: draw oriented labels on rotated images and write per-sequence videos.
 
 ## Quick Check
 
 ```bash
 python -B tools/smoke_test_geometry.py
+python -B tools/check_prior_flow_geometry.py
 ```
 
 ## Linux Setup
@@ -223,3 +228,42 @@ Common parameter adjustments:
   debugging, for example `--seq-glob 'scene_*.txt' --limit-frames 100`.
 
 More details are in `docs/quadtrack_orientation_benchmark.md`.
+
+## Visualization
+
+After running conversion with `--rotate-images`, create one video per
+variant/sequence:
+
+```bash
+python -B tools/visualize_orientation_benchmark.py \
+  --benchmark-root ./outputs/quadtrack_orientation_benchmark_with_images \
+  --label-kind detections \
+  --out-root ./outputs/quadtrack_orientation_benchmark_with_images/visualizations \
+  --fps 10
+```
+
+Outputs are written as:
+
+```text
+outputs/quadtrack_orientation_benchmark_with_images/
+  visualizations/
+    prior_a2b/0000.mp4
+    polar_up/0000.mp4
+    target_north_80/0000.mp4
+    visualization_manifest.json
+```
+
+To visualize only selected data while debugging:
+
+```bash
+python -B tools/visualize_orientation_benchmark.py \
+  --benchmark-root ./outputs/quadtrack_orientation_benchmark_with_images \
+  --variants prior_a2b,target_north_80 \
+  --seqs 0000,0001 \
+  --max-frames 100 \
+  --draw-aabb
+```
+
+The visualizer reads `images/<variant>/<sequence>/` and
+`detections/oriented_csv/<variant>/<sequence>.csv`. It draws oriented polygons,
+object IDs, scores, and wraps seam-crossing boxes horizontally for display.

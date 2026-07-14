@@ -20,8 +20,17 @@ PriOr-Flow uses `projection_prim_ortho.py` for the core panoramic geometry:
 The conversion script mirrors the same idea on CPU/OpenCV:
 
 ```text
-ERP pixel -> longitude/latitude -> unit sphere -> SO(3) rotation -> ERP pixel
+PriOr-Flow pixel-center ERP coordinate
+  -> longitude/latitude
+  -> unit sphere
+  -> SO(3) rotation
+  -> PriOr-Flow pixel-center ERP coordinate
 ```
+
+For images, the converter follows PriOr-Flow `generate_samplegrid`: for each
+output pixel, rotate the output ray by `R` to find the source pixel. Therefore
+visible image content moves by `R.T`. Labels are moved with that same visible
+content motion so rotated images and oriented boxes stay aligned.
 
 For labels it samples each box edge densely before rotation, because after a
 spherical rotation a rectangle edge is generally not a rectangle edge in the ERP
