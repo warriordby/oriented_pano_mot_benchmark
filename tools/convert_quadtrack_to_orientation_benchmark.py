@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import configparser
 import csv
 import json
 import math
@@ -72,15 +73,99 @@ class Detection:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Convert QuadTrack/MOT detections to a spherical-rotation oriented benchmark."
+        description="Convert QuadTrack/MOT detections to a spherical-rotation oriented benchmark.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""Examples:
+  # QuadTrack default layout: <root>/detection_results_mot/*.txt
+  python -B tools/convert_quadtrack_to_orientation_benchmark.py \\
+    --quadtrack-root /data/QuadTrack_test/OmniTrack_Omnidet_test \\
+    --out-root outputs/quadtrack_orientation_benchmark \\
+    --image-width 2048 --image-height 480 \\
+    --variants prior_a2b,polar_up,target_north_80
+
+  # If image files are named 000001.jpg instead of 000000.jpg for frame 1:
+  python -B tools/convert_quadtrack_to_orientation_benchmark.py \\
+    --quadtrack-root /data/QuadTrack_test/OmniTrack_Omnidet_test \\
+    --out-root outputs/quadtrack_orientation_benchmark \\
+    --mot-frame-to-image-offset 0
+
+  # Official MOTChallenge/DanceTrack-like layout: <root>/<sequence>/seqinfo.ini, img1, gt or det
+  python -B tools/convert_quadtrack_to_orientation_benchmark.py \\
+    --quadtrack-root /data/QuadTrack/test \\
+    --out-root outputs/quadtrack_orientation_benchmark \\
+    --variants prior_a2b,polar_up,target_north_80
+""",
     )
-    parser.add_argument("--quadtrack-root", type=Path, required=True, help="Root containing QuadTrack JSONs or detection_results_mot.")
+    parser.add_argument(
+        "--quadtrack-root",
+        type=Path,
+        required=True,
+        help=(
+            "QuadTrack root. For MOT txt input this usually contains "
+            "detection_results_mot/*.txt; for JSON input it contains *.json."
+        ),
+    )
     parser.add_argument("--out-root", type=Path, required=True, help="Output benchmark root.")
-    parser.add_argument("--image-root", type=Path, default=None, help="Optional panorama image root.")
-    parser.add_argument("--det-root", type=Path, default=None, help="Optional MOT txt root. Defaults to quadtrack-root/detection_results_mot.")
-    parser.add_argument("--input-format", choices=["auto", "mot", "quadtrack_json"], default="auto")
-    parser.add_argument("--image-width", type=int, default=2048)
-    parser.add_argument("--image-height", type=int, default=480)
+    parser.add_argument(
+        "--image-root",
+        type=Path,
+        default=None,
+        help=(
+            "Optional panorama image root. The script searches common layouts: "
+            "<image-root>/<seq>/<frame>, <seq>/img1/<frame>, <seq>/images/<frame>, "
+            "and flat <image-root>/<frame>."
+        ),
+    )
+    parser.add_argument(
+        "--det-root",
+        type=Path,
+        default=None,
+        help="Optional MOT txt root. Defaults to <quadtrack-root>/detection_results_mot.",
+    )
+    parser.add_argument(
+        "--seq-glob",
+        default=None,
+        help=(
+            "Optional file glob for sequence inputs. Defaults to *.txt for MOT "
+            "and *.json for QuadTrack JSON. Example: --seq-glob 'scene_*.txt'."
+        ),
+    )
+    parser.add_argument(
+        "--input-format",
+        choices=["auto", "mot", "motchallenge", "quadtrack_json"],
+        default="auto",
+        help=(
+            "Input label format. auto tries detection_results_mot/*.txt, then "
+            "MOTChallenge/DanceTrack-like sequence folders, then JSON."
+        ),
+    )
+    parser.add_argument(
+        "--label-source",
+        choices=["auto", "gt", "det"],
+        default="auto",
+        help=(
+            "For MOTChallenge/DanceTrack-like sequence folders, choose gt/gt.txt "
+            "or det/det.txt. auto prefers gt when present, otherwise det."
+        ),
+    )
+    parser.add_argument(
+        "--image-width",
+        type=int,
+        default=2048,
+        help=(
+            "ERP panorama width used for label-only conversion. If --image-root is "
+            "provided and images can be read, the real image size is used instead."
+        ),
+    )
+    parser.add_argument(
+        "--image-height",
+        type=int,
+        default=480,
+        help=(
+            "ERP panorama height used for label-only conversion. Must match the "
+            "coordinate system of the input boxes."
+        ),
+    )
     parser.add_argument(
         "--variants",
         default="prior_a2b,polar_up,target_north_80",
@@ -89,28 +174,156 @@ def parse_args() -> argparse.Namespace:
             "polar_up, polar_down, target_north_80, target_south_80, custom."
         ),
     )
-    parser.add_argument("--yaw-deg", type=float, default=0.0, help="Custom Rz angle for variant custom.")
-    parser.add_argument("--pitch-deg", type=float, default=0.0, help="Custom Ry angle for variant custom.")
-    parser.add_argument("--roll-deg", type=float, default=0.0, help="Custom Rx angle for variant custom.")
-    parser.add_argument("--edge-samples", type=int, default=32, help="Samples per original box side.")
-    parser.add_argument("--min-score", type=float, default=-1.0)
-    parser.add_argument("--input-kind", choices=["detections", "gt"], default="detections")
+    parser.add_argument("--yaw-deg", type=float, default=0.0, help="Custom Rz angle in degrees for --variants custom.")
+    parser.add_argument("--pitch-deg", type=float, default=0.0, help="Custom Ry angle in degrees for --variants custom.")
+    parser.add_argument("--roll-deg", type=float, default=0.0, help="Custom Rx angle in degrees for --variants custom.")
+    parser.add_argument(
+        "--edge-samples",
+        type=int,
+        default=32,
+        help=(
+            "Samples per original box side before spherical rotation. Increase to "
+            "64 for very large/polar boxes; 16 is usually enough for quick checks."
+        ),
+    )
+    parser.add_argument("--min-score", type=float, default=-1.0, help="Drop detections with score below this threshold.")
+    parser.add_argument(
+        "--input-kind",
+        choices=["detections", "gt"],
+        default="detections",
+        help="Output namespace under <out-root>. Use gt when converting ground-truth labels.",
+    )
+    parser.add_argument(
+        "--mot-frame-to-image-offset",
+        type=int,
+        default=-1,
+        help=(
+            "For MOT txt input, synthesized image index = MOT frame + offset. "
+            "Default -1 maps frame 1 to 000000.jpg, matching common QuadTrack exports. "
+            "Use 0 when images are 000001.jpg for frame 1."
+        ),
+    )
+    parser.add_argument(
+        "--json-frame-offset",
+        type=int,
+        default=1,
+        help=(
+            "For QuadTrack JSON input, output frame = numeric image stem + offset. "
+            "Default 1 maps 000000.jpg to frame 1. Use 0 when JSON keys are already one-based."
+        ),
+    )
+    parser.add_argument(
+        "--frame-name-width",
+        type=int,
+        default=6,
+        help="Zero padding width when synthesizing MOT image names, for example 6 -> 000001.jpg.",
+    )
+    parser.add_argument(
+        "--frame-image-ext",
+        default=".jpg",
+        help="Input image extension when synthesizing MOT image names. Use .png for PNG datasets.",
+    )
+    parser.add_argument("--mot-class-name", default="person", help="Class name assigned to MOT txt rows.")
     parser.add_argument("--rotate-images", action="store_true", help="Write rotated images when --image-root is available.")
     parser.add_argument("--image-ext", default=".jpg", help="Output image extension.")
-    parser.add_argument("--limit-seqs", type=int, default=0)
-    parser.add_argument("--limit-frames", type=int, default=0)
+    parser.add_argument("--limit-seqs", type=int, default=0, help="Process only the first N sequence files; 0 means all.")
+    parser.add_argument("--limit-frames", type=int, default=0, help="Process only frames <= N; 0 means all.")
     return parser.parse_args()
 
 
-def mot_files(det_root: Path) -> list[Path]:
-    return sorted(p for p in det_root.glob("*.txt") if p.is_file())
+def validate_args(args: argparse.Namespace) -> None:
+    if args.image_width <= 0 or args.image_height <= 0:
+        raise SystemExit("--image-width and --image-height must be positive")
+    if args.edge_samples < 2:
+        raise SystemExit("--edge-samples must be >= 2")
+    if args.frame_name_width < 1:
+        raise SystemExit("--frame-name-width must be >= 1")
+    args.frame_image_ext = normalize_ext(args.frame_image_ext)
+    args.image_ext = normalize_ext(args.image_ext)
 
 
-def json_files(root: Path) -> list[Path]:
-    return sorted(p for p in root.glob("*.json") if p.is_file() and p.name != "conversion_manifest.json")
+def normalize_ext(ext: str) -> str:
+    ext = ext.strip()
+    if not ext:
+        return ".jpg"
+    return ext if ext.startswith(".") else f".{ext}"
 
 
-def load_mot_file(path: Path) -> list[Detection]:
+def mot_files(det_root: Path, seq_glob: str | None = None) -> list[Path]:
+    return sorted(p for p in det_root.glob(seq_glob or "*.txt") if p.is_file())
+
+
+def json_files(root: Path, seq_glob: str | None = None) -> list[Path]:
+    return sorted(
+        p
+        for p in root.glob(seq_glob or "*.json")
+        if p.is_file() and p.name not in {"conversion_manifest.json", "orientation_benchmark_manifest.json"}
+    )
+
+
+def read_seqinfo(seq_dir: Path) -> dict[str, str]:
+    path = seq_dir / "seqinfo.ini"
+    cfg = configparser.ConfigParser()
+    if path.exists():
+        cfg.read(path, encoding="utf-8")
+    section = cfg["Sequence"] if cfg.has_section("Sequence") else {}
+    return {
+        "name": str(section.get("name", seq_dir.name)),
+        "imDir": str(section.get("imDir", "img1")),
+        "imExt": str(section.get("imExt", ".jpg")),
+        "imWidth": str(section.get("imWidth", "0")),
+        "imHeight": str(section.get("imHeight", "0")),
+        "seqLength": str(section.get("seqLength", "0")),
+        "nameLength": str(section.get("nameLength", "8")),
+    }
+
+
+def motchallenge_sequence_candidates(root: Path) -> list[Path]:
+    if (root / "seqinfo.ini").exists() or (root / "img1").exists():
+        return [root]
+    if not root.exists():
+        return []
+    return sorted(
+        p
+        for p in root.iterdir()
+        if p.is_dir()
+        and (
+            (p / "seqinfo.ini").exists()
+            or (p / "img1").exists()
+            or (p / "gt" / "gt.txt").exists()
+            or (p / "det" / "det.txt").exists()
+        )
+    )
+
+
+def motchallenge_label_file(seq_dir: Path, label_source: str) -> tuple[str | None, Path | None]:
+    gt_path = seq_dir / "gt" / "gt.txt"
+    det_path = seq_dir / "det" / "det.txt"
+    if label_source == "gt":
+        return ("gt", gt_path) if gt_path.exists() else (None, None)
+    if label_source == "det":
+        return ("det", det_path) if det_path.exists() else (None, None)
+    if gt_path.exists():
+        return "gt", gt_path
+    if det_path.exists():
+        return "det", det_path
+    return None, None
+
+
+def motchallenge_sequence_dirs(root: Path, label_source: str, seq_glob: str | None = None) -> list[Path]:
+    seqs = motchallenge_sequence_candidates(root)
+    if seq_glob:
+        seqs = [seq for seq in seqs if seq.match(seq_glob) or seq.name == seq_glob]
+    return [seq for seq in seqs if motchallenge_label_file(seq, label_source)[1] is not None]
+
+
+def motchallenge_frame_file(frame: int, seqinfo: dict[str, str]) -> str:
+    name_length = int(float(seqinfo.get("nameLength", "8") or 8))
+    im_ext = normalize_ext(seqinfo.get("imExt", ".jpg") or ".jpg")
+    return f"{frame:0{name_length}d}{im_ext}"
+
+
+def load_mot_file(path: Path, args: argparse.Namespace) -> list[Detection]:
     rows: list[Detection] = []
     with path.open("r", encoding="utf-8") as f:
         for line in f:
@@ -127,15 +340,50 @@ def load_mot_file(path: Path) -> list[Detection]:
                 score = float(parts[6])
             except ValueError:
                 continue
-            frame_file = f"{max(frame - 1, 0):06d}.jpg"
+            image_index = max(frame + args.mot_frame_to_image_offset, 0)
+            frame_file = f"{image_index:0{args.frame_name_width}d}{args.frame_image_ext}"
             rows.append(
                 Detection(
                     frame=frame,
                     object_id=object_id,
-                    class_name="person",
+                    class_name=args.mot_class_name,
                     xyxy=(x, y, x + w, y + h),
                     score=score,
                     frame_file=frame_file,
+                )
+            )
+    return rows
+
+
+def load_motchallenge_sequence(seq_dir: Path, args: argparse.Namespace) -> list[Detection]:
+    source, path = motchallenge_label_file(seq_dir, args.label_source)
+    if source is None or path is None:
+        return []
+    seqinfo = read_seqinfo(seq_dir)
+    rows: list[Detection] = []
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) < 7:
+                continue
+            try:
+                frame = int(float(parts[0]))
+                object_id = int(float(parts[1]))
+                x, y, w, h = [float(v) for v in parts[2:6]]
+                score = float(parts[6])
+            except ValueError:
+                continue
+            rows.append(
+                Detection(
+                    frame=frame,
+                    object_id=object_id,
+                    class_name=args.mot_class_name,
+                    xyxy=(x, y, x + w, y + h),
+                    score=score,
+                    frame_file=motchallenge_frame_file(frame, seqinfo),
                 )
             )
     return rows
@@ -151,18 +399,20 @@ def parse_label_id(label_id: str) -> tuple[str, int]:
         return cls or "object", -1
 
 
-def load_quadtrack_json(path: Path) -> list[Detection]:
+def load_quadtrack_json(path: Path, args: argparse.Namespace) -> list[Detection]:
     data = json.loads(path.read_text(encoding="utf-8"))
     detections = data.get("detections", data)
     rows: list[Detection] = []
     if not isinstance(detections, dict):
         return rows
+    frame_counter = 0
     for frame_file, dets in sorted(detections.items()):
+        frame_counter += 1
         stem = Path(frame_file).stem
         try:
-            frame = int(stem) + 1
+            frame = int(stem) + args.json_frame_offset
         except ValueError:
-            frame = len(rows) + 1
+            frame = frame_counter
         for det in dets:
             box = det.get("box")
             if not box or len(box) < 4:
@@ -185,18 +435,28 @@ def load_quadtrack_json(path: Path) -> list[Detection]:
 
 def choose_input_files(args: argparse.Namespace) -> tuple[str, list[Path]]:
     det_root = args.det_root or (args.quadtrack_root / "detection_results_mot")
-    if args.input_format in {"auto", "mot"} and det_root.exists():
-        files = mot_files(det_root)
-        if files or args.input_format == "mot":
+    if args.input_format == "mot":
+        return "mot", mot_files(det_root, args.seq_glob) if det_root.exists() else []
+    if args.input_format == "motchallenge":
+        return "motchallenge", motchallenge_sequence_dirs(args.quadtrack_root, args.label_source, args.seq_glob)
+    if args.input_format == "quadtrack_json":
+        return "quadtrack_json", json_files(args.quadtrack_root, args.seq_glob)
+    if det_root.exists():
+        files = mot_files(det_root, args.seq_glob)
+        if files:
             return "mot", files
-    files = json_files(args.quadtrack_root)
-    return "quadtrack_json", files
+    seq_dirs = motchallenge_sequence_dirs(args.quadtrack_root, args.label_source, args.seq_glob)
+    if seq_dirs:
+        return "motchallenge", seq_dirs
+    return "quadtrack_json", json_files(args.quadtrack_root, args.seq_glob)
 
 
-def load_sequence(path: Path, input_format: str) -> list[Detection]:
+def load_sequence(path: Path, input_format: str, args: argparse.Namespace) -> list[Detection]:
     if input_format == "mot":
-        return load_mot_file(path)
-    return load_quadtrack_json(path)
+        return load_mot_file(path, args)
+    if input_format == "motchallenge":
+        return load_motchallenge_sequence(path, args)
+    return load_quadtrack_json(path, args)
 
 
 def variant_rotation(name: str, detections: list[Detection], width: int, height: int, args: argparse.Namespace) -> np.ndarray:
@@ -368,6 +628,8 @@ def find_image(image_root: Path, seq: str, frame_file: str, frame: int) -> Path 
         image_root / seq / frame_file,
         image_root / seq / "img1" / frame_file,
         image_root / seq / "images" / frame_file,
+        image_root / "img1" / frame_file,
+        image_root / "images" / frame_file,
         image_root / frame_file,
         image_root / seq / f"{max(frame - 1, 0):06d}.jpg",
         image_root / seq / f"{max(frame - 1, 0):06d}.png",
@@ -379,15 +641,53 @@ def find_image(image_root: Path, seq: str, frame_file: str, frame: int) -> Path 
     return None
 
 
+def infer_sequence_image_size(detections: list[Detection], seq: str, args: argparse.Namespace) -> tuple[int, int]:
+    if args.image_root is None or cv2 is None:
+        return args.image_width, args.image_height
+    for det in sorted(detections, key=lambda item: item.frame):
+        src = find_image(args.image_root, seq, det.frame_file, det.frame)
+        if src is None:
+            continue
+        image = cv2.imread(str(src), cv2.IMREAD_COLOR)
+        if image is None:
+            continue
+        height, width = image.shape[:2]
+        return int(width), int(height)
+    return args.image_width, args.image_height
+
+
+def motchallenge_size(seq_dir: Path, args: argparse.Namespace) -> tuple[int, int]:
+    seqinfo = read_seqinfo(seq_dir)
+    width = int(args.image_width or float(seqinfo.get("imWidth", "0") or 0))
+    height = int(args.image_height or float(seqinfo.get("imHeight", "0") or 0))
+    if width <= 0 or height <= 0:
+        raise ValueError(f"Missing image size for {seq_dir}; pass --image-width and --image-height.")
+    return width, height
+
+
+def helper_args_for_sequence(path: Path, input_format: str, args: argparse.Namespace) -> argparse.Namespace:
+    helper = argparse.Namespace(**vars(args))
+    if input_format == "motchallenge":
+        width, height = motchallenge_size(path, args)
+        helper.image_width = width
+        helper.image_height = height
+        if helper.image_root is None:
+            helper.image_root = path.parent
+        if helper.image_ext in {"", None}:
+            helper.image_ext = normalize_ext(read_seqinfo(path).get("imExt", ".jpg") or ".jpg")
+    return helper
+
+
 def rotate_images_for_sequence(
     detections: list[Detection],
     rotation: np.ndarray,
     seq: str,
     variant: str,
     args: argparse.Namespace,
+    image_size: tuple[int, int],
 ) -> tuple[int, tuple[int, int]]:
     if not args.rotate_images or args.image_root is None:
-        return 0, (args.image_width, args.image_height)
+        return 0, image_size
     if cv2 is None:
         raise RuntimeError("OpenCV is required for --rotate-images")
     by_frame: dict[int, Detection] = {}
@@ -396,7 +696,7 @@ def rotate_images_for_sequence(
     written = 0
     out_dir = args.out_root / "images" / variant / seq
     out_dir.mkdir(parents=True, exist_ok=True)
-    actual_size = (args.image_width, args.image_height)
+    actual_size = image_size
     for frame, det in sorted(by_frame.items()):
         if args.limit_frames and frame > args.limit_frames:
             continue
@@ -417,14 +717,16 @@ def rotate_images_for_sequence(
 
 
 def process_sequence(path: Path, input_format: str, args: argparse.Namespace, variants: list[str]) -> list[dict[str, object]]:
-    seq = path.stem
-    detections = [d for d in load_sequence(path, input_format) if d.score >= args.min_score]
+    seq = path.name if input_format == "motchallenge" else path.stem
+    helper_args = helper_args_for_sequence(path, input_format, args)
+    detections = [d for d in load_sequence(path, input_format, args) if d.score >= args.min_score]
     if args.limit_frames:
         detections = [d for d in detections if d.frame <= args.limit_frames]
+    base_size = infer_sequence_image_size(detections, seq, helper_args)
     summary: list[dict[str, object]] = []
     for variant in variants:
-        rotation = variant_rotation(variant, detections, args.image_width, args.image_height, args)
-        image_count, image_size = rotate_images_for_sequence(detections, rotation, seq, variant, args)
+        rotation = variant_rotation(variant, detections, base_size[0], base_size[1], helper_args)
+        image_count, image_size = rotate_images_for_sequence(detections, rotation, seq, variant, helper_args, base_size)
         width, height = image_size
         records = [rotate_detection(det, rotation, width, height, args.edge_samples) for det in detections]
         oriented_path = args.out_root / args.input_kind / "oriented_csv" / variant / f"{seq}.csv"
@@ -450,14 +752,34 @@ def process_sequence(path: Path, input_format: str, args: argparse.Namespace, va
     return summary
 
 
+def input_not_found_message(args: argparse.Namespace, selected_format: str) -> str:
+    det_root = args.det_root or (args.quadtrack_root / "detection_results_mot")
+    mot_count = len(mot_files(det_root, args.seq_glob)) if det_root.exists() else 0
+    seq_candidates = motchallenge_sequence_candidates(args.quadtrack_root)
+    seq_with_gt = sum(1 for seq in seq_candidates if (seq / "gt" / "gt.txt").exists())
+    seq_with_det = sum(1 for seq in seq_candidates if (seq / "det" / "det.txt").exists())
+    json_count = len(json_files(args.quadtrack_root, args.seq_glob))
+    return (
+        f"No input files found under {args.quadtrack_root}\n"
+        f"selected input format: {selected_format}\n"
+        f"checked MOT txt: {det_root}/*.txt -> {mot_count} file(s)\n"
+        f"checked MOTChallenge sequence dirs: {len(seq_candidates)} candidate(s), "
+        f"{seq_with_gt} with gt/gt.txt, {seq_with_det} with det/det.txt\n"
+        f"checked QuadTrack JSON: {args.quadtrack_root}/*.json -> {json_count} file(s)\n"
+        "If this is an official test split with only img1 images, there are no boxes to rotate; "
+        "provide detections in det/det.txt or use a split that has gt/gt.txt."
+    )
+
+
 def main() -> None:
     args = parse_args()
+    validate_args(args)
     variants = [v.strip() for v in args.variants.split(",") if v.strip()]
     input_format, files = choose_input_files(args)
     if args.limit_seqs:
         files = files[: args.limit_seqs]
     if not files:
-        raise SystemExit(f"No input files found under {args.quadtrack_root}")
+        raise SystemExit(input_not_found_message(args, input_format))
     args.out_root.mkdir(parents=True, exist_ok=True)
     all_summary: list[dict[str, object]] = []
     for path in files:
@@ -470,6 +792,13 @@ def main() -> None:
         "variants": variants,
         "edge_samples": args.edge_samples,
         "input_kind": args.input_kind,
+        "label_source": args.label_source,
+        "min_score": args.min_score,
+        "mot_frame_to_image_offset": args.mot_frame_to_image_offset,
+        "json_frame_offset": args.json_frame_offset,
+        "frame_name_width": args.frame_name_width,
+        "frame_image_ext": args.frame_image_ext,
+        "mot_class_name": args.mot_class_name,
         "summary": all_summary,
     }
     manifest_path = args.out_root / "orientation_benchmark_manifest.json"

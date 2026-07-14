@@ -81,6 +81,52 @@ python -B tools/convert_dancetrack_to_orientation_benchmark.py \
 
 ## QuadTrack Example
 
+For the official MOTChallenge/DanceTrack-like QuadTrack layout:
+
+```text
+../QuadTrack/test/
+  <sequence>/
+    seqinfo.ini
+    img1/
+    gt/gt.txt   # if ground truth is available
+    det/det.txt # if detection boxes are available
+```
+
+you can run the whole split directly:
+
+```bash
+python -B tools/convert_quadtrack_to_orientation_benchmark.py \
+  --quadtrack-root ../QuadTrack/test \
+  --out-root ./outputs/quadtrack_orientation_benchmark \
+  --image-width 2048 \
+  --image-height 480 \
+  --variants prior_a2b,polar_up,target_north_80 \
+  --edge-samples 32 \
+  --input-kind detections
+```
+
+In this mode `--input-format auto` detects sequence folders automatically and
+`--label-source auto` uses `gt/gt.txt` first, otherwise `det/det.txt`. If the
+official `test` split contains only `img1` images and no box file, there is
+nothing to rotate yet; run a detector/tracker export into `det/det.txt`, or use
+a split that includes `gt/gt.txt`.
+
+The default QuadTrack path expected by the converter is:
+
+```text
+/data/QuadTrack_test/OmniTrack_Omnidet_test/
+  detection_results_mot/
+    <sequence>.txt
+```
+
+Each MOT row is interpreted as:
+
+```text
+frame,id,x,y,w,h,score,...
+```
+
+Label-only conversion from QuadTrack MOT txt files:
+
 ```bash
 python -B tools/convert_quadtrack_to_orientation_benchmark.py \
   --quadtrack-root /data/QuadTrack_test/OmniTrack_Omnidet_test \
@@ -91,3 +137,65 @@ python -B tools/convert_quadtrack_to_orientation_benchmark.py \
   --edge-samples 32 \
   --input-kind detections
 ```
+
+If the MOT txt files are not under `<quadtrack-root>/detection_results_mot`,
+set `--det-root` explicitly:
+
+```bash
+python -B tools/convert_quadtrack_to_orientation_benchmark.py \
+  --quadtrack-root /data/QuadTrack_test/OmniTrack_Omnidet_test \
+  --det-root /data/QuadTrack_test/OmniTrack_Omnidet_test/detection_results_mot \
+  --out-root outputs/quadtrack_orientation_benchmark \
+  --image-width 2048 \
+  --image-height 480 \
+  --variants target_north_80,target_south_80
+```
+
+With rotated images:
+
+```bash
+python -B tools/convert_quadtrack_to_orientation_benchmark.py \
+  --quadtrack-root /data/QuadTrack_test/OmniTrack_Omnidet_test \
+  --image-root /data/QuadTrack_test/images \
+  --out-root outputs/quadtrack_orientation_benchmark \
+  --variants prior_a2b,polar_up,target_north_80 \
+  --rotate-images
+```
+
+For JSON annotations instead of MOT txt:
+
+```bash
+python -B tools/convert_quadtrack_to_orientation_benchmark.py \
+  --quadtrack-root /data/QuadTrack_test/OmniTrack_Omnidet_test \
+  --input-format quadtrack_json \
+  --out-root outputs/quadtrack_orientation_benchmark \
+  --image-width 2048 \
+  --image-height 480 \
+  --variants target_north_80
+```
+
+Common parameter adjustments:
+
+- `--image-width`, `--image-height`: set these to the panorama resolution used
+  by the input boxes. QuadTrack examples here use `2048x480`. If `--image-root`
+  is provided and images are readable, the converter uses the real image size.
+- `--variants`: choose rotations. `prior_a2b`/`prior_b2a` reproduce
+  PriOr-Flow orthogonal rotations; `polar_up`/`polar_down` create fixed strong
+  ERP polar distortion; `target_north_80`/`target_south_80` move each sequence's
+  average target direction near +/-80 degrees latitude; `custom` uses
+  `--yaw-deg --pitch-deg --roll-deg`.
+- `--edge-samples`: samples each original box side before rotation. Use `16`
+  for quick checks, `32` for normal conversion, and `64` for large boxes or
+  severe polar distortion.
+- `--mot-frame-to-image-offset`: controls MOT frame to image filename mapping.
+  The default `-1` maps frame `1` to `000000.jpg`. Use `0` if frame `1` maps to
+  `000001.jpg`.
+- `--frame-name-width`, `--frame-image-ext`: adjust synthesized image names,
+  for example `--frame-name-width 5 --frame-image-ext .png`.
+- `--min-score`: filters low-confidence detections before conversion.
+- `--label-source`: for official sequence folders, choose `gt`, `det`, or
+  `auto`; `auto` prefers ground truth when it exists.
+- `--seq-glob`, `--limit-seqs`, `--limit-frames`: restrict conversion while
+  debugging, for example `--seq-glob 'scene_*.txt' --limit-frames 100`.
+
+More details are in `docs/quadtrack_orientation_benchmark.md`.

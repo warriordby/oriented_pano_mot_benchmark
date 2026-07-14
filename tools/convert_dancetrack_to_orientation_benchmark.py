@@ -158,7 +158,7 @@ def process_sequence(seq_dir: Path, args: argparse.Namespace, variants: list[str
     summary: list[dict[str, object]] = []
     for variant in variants:
         rotation = variant_rotation(variant, detections, width, height, helper_args)
-        image_count, image_size = rotate_images_for_sequence(detections, rotation, seq, variant, helper_args)
+        image_count, image_size = rotate_images_for_sequence(detections, rotation, seq, variant, helper_args, (width, height))
         width2, height2 = image_size
         records = [rotate_detection(det, rotation, width2, height2, args.edge_samples) for det in detections]
         oriented_path = args.out_root / args.label_source / "oriented_csv" / variant / f"{seq}.csv"
@@ -213,4 +213,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

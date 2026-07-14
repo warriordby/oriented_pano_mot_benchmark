@@ -27,6 +27,87 @@ For labels it samples each box edge densely before rotation, because after a
 spherical rotation a rectangle edge is generally not a rectangle edge in the ERP
 image plane.
 
+## Supported QuadTrack Inputs
+
+The converter supports three common QuadTrack export forms.
+
+### Official MOTChallenge/DanceTrack-like sequence folders
+
+Official releases are often laid out as:
+
+```text
+<quadtrack-root>/
+  <sequence>/
+    seqinfo.ini
+    img1/
+    gt/gt.txt
+    det/det.txt
+```
+
+`gt/gt.txt` and `det/det.txt` use MOTChallenge rows:
+
+```text
+frame,id,x,y,w,h,score,...
+```
+
+`--input-format auto` detects this layout automatically. `--label-source auto`
+prefers `gt/gt.txt` when present and falls back to `det/det.txt`.
+
+For the server layout in which the split itself is passed as the root:
+
+```bash
+python -B tools/convert_quadtrack_to_orientation_benchmark.py \
+  --quadtrack-root ../QuadTrack/test \
+  --out-root ./outputs/quadtrack_orientation_benchmark \
+  --image-width 2048 \
+  --image-height 480 \
+  --variants prior_a2b,polar_up,target_north_80 \
+  --edge-samples 32 \
+  --input-kind detections
+```
+
+If the official `test` split has only images and no `gt/gt.txt` or `det/det.txt`,
+the converter cannot create oriented boxes because there are no boxes to rotate.
+In that case, first export detections to each sequence's `det/det.txt`, or run
+the converter on a split that provides `gt/gt.txt`.
+
+### MOT txt
+
+Default layout:
+
+```text
+<quadtrack-root>/
+  detection_results_mot/
+    <sequence>.txt
+```
+
+Each row is parsed as MOTChallenge-style detection data:
+
+```text
+frame,id,x,y,w,h,score,...
+```
+
+`x,y,w,h` are input ERP AABBs. They are converted to an oriented box after
+spherical rotation by sampling each original box edge before projecting it back
+to the ERP image plane.
+
+### QuadTrack JSON
+
+When `--input-format quadtrack_json` is used, the script reads JSON files under
+`--quadtrack-root`. It accepts either:
+
+```json
+{"detections": {"000000.jpg": [{"box": [x1, y1, x2, y2], "score": 0.9, "label_id": "person:1"}]}}
+```
+
+or the inner frame dictionary directly:
+
+```json
+{"000000.jpg": [{"box": [x1, y1, x2, y2], "score": 0.9, "label_id": "person:1"}]}
+```
+
+For JSON input, `box` is interpreted as `x1,y1,x2,y2`.
+
 ## Usage
 
 Label-only conversion for the available QuadTrack detection files:
@@ -38,14 +119,73 @@ py -B tools\convert_quadtrack_to_orientation_benchmark.py `
   --image-width 2048 `
   --image-height 480 `
   --variants prior_a2b,polar_up,target_north_80 `
+  --edge-samples 32 `
   --input-kind detections
 ```
 
-If original images are available, add:
+The equivalent Linux command is:
+
+```bash
+python -B tools/convert_quadtrack_to_orientation_benchmark.py \
+  --quadtrack-root /data/QuadTrack_test/OmniTrack_Omnidet_test \
+  --out-root outputs/quadtrack_orientation_benchmark \
+  --image-width 2048 \
+  --image-height 480 \
+  --variants prior_a2b,polar_up,target_north_80 \
+  --edge-samples 32 \
+  --input-kind detections
+```
+
+If the MOT txt files are not in the default `detection_results_mot` folder, set
+`--det-root`:
+
+```bash
+python -B tools/convert_quadtrack_to_orientation_benchmark.py \
+  --quadtrack-root /data/QuadTrack_test/OmniTrack_Omnidet_test \
+  --det-root /data/QuadTrack_test/OmniTrack_Omnidet_test/detection_results_mot \
+  --out-root outputs/quadtrack_orientation_benchmark \
+  --image-width 2048 \
+  --image-height 480 \
+  --variants target_north_80,target_south_80
+```
+
+If original images are available, add `--image-root` and `--rotate-images`:
 
 ```powershell
-  --image-root D:\path\to\quadtrack\images `
+py -B tools\convert_quadtrack_to_orientation_benchmark.py `
+  --quadtrack-root D:\googledownload\omnitrack\QuadTrack_test\OmniTrack_Omnidet_test `
+  --image-root D:\googledownload\omnitrack\QuadTrack_test\images `
+  --out-root outputs\quadtrack_orientation_benchmark `
+  --variants prior_a2b,polar_up,target_north_80 `
+  --edge-samples 32 `
   --rotate-images
+```
+
+For JSON annotations:
+
+```bash
+python -B tools/convert_quadtrack_to_orientation_benchmark.py \
+  --quadtrack-root /data/QuadTrack_test/OmniTrack_Omnidet_test \
+  --input-format quadtrack_json \
+  --out-root outputs/quadtrack_orientation_benchmark \
+  --image-width 2048 \
+  --image-height 480 \
+  --variants target_north_80
+```
+
+For a quick debugging run:
+
+```bash
+python -B tools/convert_quadtrack_to_orientation_benchmark.py \
+  --quadtrack-root /data/QuadTrack_test/OmniTrack_Omnidet_test \
+  --out-root outputs/quadtrack_orientation_debug \
+  --variants custom \
+  --yaw-deg 0 \
+  --pitch-deg 60 \
+  --roll-deg 0 \
+  --edge-samples 16 \
+  --limit-seqs 2 \
+  --limit-frames 100
 ```
 
 ## Output
@@ -79,9 +219,9 @@ only for visualization, not for matching.
 - `prior_b2a`: inverse orthogonal view, Euler z-y-x `[0, 0, +90deg]`.
 - `polar_up`: fixed `Ry(+75deg)` strong ERP polar distortion.
 - `polar_down`: fixed `Ry(-75deg)` strong ERP polar distortion.
-- `target_north_80`: per-sequence rotation that moves the median detection ray
+- `target_north_80`: per-sequence rotation that moves the average detection ray
   near latitude `+80deg`.
-- `target_south_80`: per-sequence rotation that moves the median detection ray
+- `target_south_80`: per-sequence rotation that moves the average detection ray
   near latitude `-80deg`.
 - `custom`: use `--yaw-deg --pitch-deg --roll-deg`.
 
@@ -89,3 +229,89 @@ For strong distortion, `target_north_80` and `target_south_80` are usually more
 aggressive than yaw-only rotation. Yaw mostly tests seam continuity; polar
 rotations create the severe ERP stretching needed by an orientation benchmark.
 
+## Parameter Meanings and When To Adjust Them
+
+| Parameter | Meaning | When to change it |
+| --- | --- | --- |
+| `--quadtrack-root` | Dataset/conversion root. In default MOT mode it should contain `detection_results_mot/*.txt`. | Always set this to the QuadTrack split or export you want to convert. |
+| `--det-root` | Explicit MOT txt directory. | Use when MOT txt files are not under `<quadtrack-root>/detection_results_mot`. |
+| `--input-format` | `auto`, `mot`, `motchallenge`, or `quadtrack_json`. `auto` tries `detection_results_mot/*.txt`, then sequence folders, then JSON. | Use `motchallenge` to force official sequence-folder parsing; use `quadtrack_json` for JSON annotations. |
+| `--label-source` | For sequence folders, chooses `gt/gt.txt`, `det/det.txt`, or `auto`. | Use `--label-source det` when converting detector boxes on an official test split; use `gt` when building from ground truth. |
+| `--seq-glob` | Glob used to select sequence files. | Use for partial conversion, e.g. `--seq-glob 'scene_*.txt'`. |
+| `--out-root` | Output benchmark root. | Use a new folder for each experiment setting to avoid mixing variants. |
+| `--image-width`, `--image-height` | ERP resolution used for label-only geometry. | Must match the coordinate system of the boxes. For QuadTrack examples use `2048x480`; change if your exported boxes use another resolution. |
+| `--image-root` | Optional root of original panorama images. | Needed for `--rotate-images`; also lets the script infer real image size when images are readable. |
+| `--rotate-images` | Writes rotated ERP images with the same spherical transform used for labels. | Enable when you want a complete image+label benchmark. Omit for faster label-only conversion. |
+| `--variants` | Comma-separated rotation variants. | Use `target_north_80,target_south_80` for the strongest polar distortion; add `prior_a2b,prior_b2a` to reproduce PriOr-Flow orthogonal rotations. |
+| `--yaw-deg`, `--pitch-deg`, `--roll-deg` | Euler angles for `--variants custom`. | Use for ablations such as `--variants custom --pitch-deg 60`. |
+| `--edge-samples` | Number of points sampled per original box side before rotation. | Use `16` for smoke tests, `32` for normal runs, `64` for large boxes or severe polar distortion. |
+| `--min-score` | Detection score threshold. | Raise it to build a cleaner detection benchmark; keep default for GT or already filtered detections. |
+| `--input-kind` | Output namespace: `detections` or `gt`. | Use `gt` if the input txt/json is ground truth. |
+| `--mot-frame-to-image-offset` | For MOT txt, image filename index = MOT frame + offset. | Default `-1` maps frame `1` to `000000.jpg`. Use `0` when frame `1` maps to `000001.jpg`. |
+| `--json-frame-offset` | For JSON input, output frame = numeric image stem + offset. | Default `1` maps `000000.jpg` to frame `1`. Use `0` if JSON keys are already one-based. |
+| `--frame-name-width` | Zero padding width for synthesized MOT image names. | Use `5` for `00001.jpg`, `8` for `00000001.jpg`, etc. |
+| `--frame-image-ext` | Input image extension for synthesized MOT frame names. | Use `.png` if the original images are PNG. |
+| `--image-ext` | Output extension for rotated images. | Use `.png` for lossless rotated images. |
+| `--mot-class-name` | Class name assigned to MOT txt rows. | Change when the MOT file is not person-only. |
+| `--limit-seqs`, `--limit-frames` | Debug limits. | Use before long runs to verify path mapping and output format. |
+
+## When You See "No input files found"
+
+That error means the script found none of the supported box sources. It checks:
+
+```text
+<quadtrack-root>/detection_results_mot/*.txt
+<quadtrack-root>/<sequence>/gt/gt.txt
+<quadtrack-root>/<sequence>/det/det.txt
+<quadtrack-root>/*.json
+```
+
+For the official `../QuadTrack/test` layout, run this quick check on Linux:
+
+```bash
+find ../QuadTrack/test -maxdepth 3 \( -path '*/gt/gt.txt' -o -path '*/det/det.txt' -o -name seqinfo.ini \) | head -30
+```
+
+If it prints only `seqinfo.ini` files, the split is image-only. The converter
+needs boxes, so add `det/det.txt` files or switch to a labeled split.
+
+## Practical Settings
+
+Use these presets as starting points.
+
+Fast geometry check:
+
+```bash
+python -B tools/convert_quadtrack_to_orientation_benchmark.py \
+  --quadtrack-root /data/QuadTrack_test/OmniTrack_Omnidet_test \
+  --out-root outputs/quadtrack_debug \
+  --variants target_north_80 \
+  --edge-samples 16 \
+  --limit-seqs 1 \
+  --limit-frames 50
+```
+
+Strong orientation benchmark without images:
+
+```bash
+python -B tools/convert_quadtrack_to_orientation_benchmark.py \
+  --quadtrack-root /data/QuadTrack_test/OmniTrack_Omnidet_test \
+  --out-root outputs/quadtrack_orientation_benchmark \
+  --image-width 2048 \
+  --image-height 480 \
+  --variants prior_a2b,prior_b2a,polar_up,polar_down,target_north_80,target_south_80 \
+  --edge-samples 32
+```
+
+Complete image+label benchmark with one-based image filenames:
+
+```bash
+python -B tools/convert_quadtrack_to_orientation_benchmark.py \
+  --quadtrack-root /data/QuadTrack_test/OmniTrack_Omnidet_test \
+  --image-root /data/QuadTrack_test/images \
+  --out-root outputs/quadtrack_orientation_benchmark \
+  --variants target_north_80,target_south_80 \
+  --edge-samples 64 \
+  --mot-frame-to-image-offset 0 \
+  --rotate-images
+```

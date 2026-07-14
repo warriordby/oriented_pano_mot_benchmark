@@ -1,5 +1,5 @@
 $QuadTrackRoot = "D:\googledownload\omnitrack\QuadTrack_test\OmniTrack_Omnidet_test"
-$OutRoot = "D:\googledownload\trackers\oriented_pano_mot_clean_project\outputs\quadtrack_orientation_benchmark"
+$OutRoot = "D:\googledownload\trackers\oriented_pano_mot_benchmark\outputs\quadtrack_orientation_benchmark"
 
 py -B tools\convert_quadtrack_to_orientation_benchmark.py `
   --quadtrack-root $QuadTrackRoot `
@@ -8,5 +8,7 @@ py -B tools\convert_quadtrack_to_orientation_benchmark.py `
   --image-height 480 `
   --variants prior_a2b,polar_up,target_north_80 `
   --edge-samples 32 `
+  --mot-frame-to-image-offset -1 `
+  --frame-name-width 6 `
+  --frame-image-ext .jpg `
   --input-kind detections
-
