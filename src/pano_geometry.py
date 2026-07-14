@@ -130,6 +130,7 @@ def make_equirectangular_remap(
     height: int,
     rotation: np.ndarray,
     vertical_fov_rad: float = pi,
+    clip_y: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Build PriOr-Flow-style remap arrays for cv2.remap.
 
@@ -137,6 +138,9 @@ def make_equirectangular_remap(
     source sampling ray. With row-vector numpy arrays this is xyz_out @ R.T.
     vertical_fov_rad defaults to pi for original full-ERP PriOr-Flow behavior;
     use 2*pi/3 for QuadTrack's 120-degree vertical coverage.
+    When vertical_fov_rad < pi, non-yaw rotations can request source latitudes
+    outside the input crop. Keep clip_y=False to expose those samples to the
+    caller's border policy instead of stretching the top/bottom rows.
     """
     yy, xx = np.meshgrid(
         np.arange(height, dtype=np.float64),
@@ -150,7 +154,7 @@ def make_equirectangular_remap(
     map_x, map_y = lonlat_to_pixels(src_lon, src_lat, width, height, vertical_fov_rad=vertical_fov_rad)
     return (
         np.mod(map_x, float(width)).astype(np.float32),
-        np.clip(map_y, 0.0, float(height - 1)).astype(np.float32),
+        (np.clip(map_y, 0.0, float(height - 1)) if clip_y else map_y).astype(np.float32),
     )
 
 
@@ -183,6 +187,7 @@ def rotate_points(
     height: int,
     rotation: np.ndarray,
     vertical_fov_rad: float = pi,
+    clip_y: bool = True,
 ) -> np.ndarray:
     """Move source-plane points consistently with PriOr-Flow img_rotate.
 
@@ -195,10 +200,9 @@ def rotate_points(
     rotated = xyz @ np.asarray(rotation, dtype=np.float64)
     out_lon, out_lat = xyz_to_lonlat(rotated)
     out_x, out_y = lonlat_to_pixels(out_lon, out_lat, width, height, vertical_fov_rad=vertical_fov_rad)
-    return np.stack(
-        [np.mod(out_x, float(width)), np.clip(out_y, 0.0, float(height - 1))],
-        axis=1,
-    )
+    if clip_y:
+        out_y = np.clip(out_y, 0.0, float(height - 1))
+    return np.stack([np.mod(out_x, float(width)), out_y], axis=1)
 
 
 def rotate_points_unwrapped(

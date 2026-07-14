@@ -84,7 +84,7 @@ def parse_args() -> argparse.Namespace:
     --out-root outputs/quadtrack_orientation_benchmark \\
     --image-width 2048 --image-height 480 \\
     --vertical-fov-deg 120 \\
-    --variants prior_a2b,polar_up,target_north_80
+    --variants prior_a2b,polar_up,target_north_55
 
   # If image files are named 000001.jpg instead of 000000.jpg for frame 1:
   python -B tools/convert_quadtrack_to_orientation_benchmark.py \\
@@ -98,7 +98,7 @@ def parse_args() -> argparse.Namespace:
     --quadtrack-root /data/QuadTrack/test \\
     --out-root outputs/quadtrack_orientation_benchmark \\
     --vertical-fov-deg 120 \\
-    --variants prior_a2b,polar_up,target_north_80
+    --variants prior_a2b,polar_up,target_north_55
 """,
     )
     parser.add_argument(
@@ -182,10 +182,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--variants",
-        default="prior_a2b,polar_up,target_north_80",
+        default="prior_a2b,polar_up,target_north_55",
         help=(
             "Comma-separated variants. Built-ins: prior_a2b, prior_b2a, "
-            "polar_up, polar_down, target_north_80, target_south_80, custom."
+            "polar_up, polar_down, target_north_55, target_south_55, custom. "
+            "Use target_north_80/target_south_80 only with --vertical-fov-deg 180."
         ),
     )
     parser.add_argument("--yaw-deg", type=float, default=0.0, help="Custom Rz angle in degrees for --variants custom.")
@@ -240,6 +241,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mot-class-name", default="person", help="Class name assigned to MOT txt rows.")
     parser.add_argument("--rotate-images", action="store_true", help="Write rotated images when --image-root is available.")
     parser.add_argument("--image-ext", default=".jpg", help="Output image extension.")
+    parser.add_argument(
+        "--invalid-image-fill",
+        choices=["black", "white", "edge"],
+        default="black",
+        help=(
+            "Fill policy for rotated-image pixels whose source latitude is outside "
+            "the input vertical FOV. black matches PriOr-Flow's grid_sample mask "
+            "behavior most closely; edge reproduces the old top/bottom row stretch."
+        ),
+    )
     parser.add_argument("--limit-seqs", type=int, default=0, help="Process only the first N sequence files; 0 means all.")
     parser.add_argument("--limit-frames", type=int, default=0, help="Process only frames <= N; 0 means all.")
     return parser.parse_args()
@@ -267,6 +278,35 @@ def normalize_ext(ext: str) -> str:
 
 def vertical_fov_rad(args: argparse.Namespace) -> float:
     return math.radians(float(getattr(args, "vertical_fov_deg", 180.0)))
+
+
+def warn_limited_fov_variants(args: argparse.Namespace, variants: list[str]) -> None:
+    if args.vertical_fov_deg >= 179.999:
+        return
+    half_fov = float(args.vertical_fov_deg) * 0.5
+    strong = {"prior_a2b", "prior_b2a", "polar_up", "polar_down"}
+    if args.rotate_images and any(v.strip().lower() in strong for v in variants):
+        print(
+            "[WARN] PriOr-Flow paper image rotations assume a full 180-degree ERP. "
+            f"With --vertical-fov-deg {args.vertical_fov_deg:g}, some rotated pixels have no "
+            "source content and will be filled by --invalid-image-fill."
+        )
+    for variant in variants:
+        key = variant.strip().lower()
+        if not (key.startswith("target_north_") or key.startswith("target_south_")):
+            continue
+        try:
+            target_deg = abs(float(key.rsplit("_", 1)[-1]))
+        except ValueError:
+            continue
+        if target_deg > half_fov:
+            print(
+                "[WARN] "
+                f"{variant} targets latitude {target_deg:g} deg, outside the visible "
+                f"range +/-{half_fov:g} deg from --vertical-fov-deg {args.vertical_fov_deg:g}. "
+                f"Use target_north_{max(0.0, half_fov - 5.0):g}/target_south_{max(0.0, half_fov - 5.0):g} "
+                "or use --vertical-fov-deg 180 for PriOr-Flow full-ERP behavior."
+            )
 
 
 def mot_files(det_root: Path, seq_glob: str | None = None) -> list[Path]:
@@ -629,12 +669,15 @@ def rotate_detection_with_projection(
 ) -> dict[str, object]:
     x1, y1, x2, y2 = det.xyxy
     edge = sample_xyxy_edges(x1, y1, x2, y2, samples_per_side=edge_samples)
-    rotated = rotate_points(edge, width, height, rotation, vertical_fov_rad=vertical_fov)
+    raw_rotated = rotate_points(edge, width, height, rotation, vertical_fov_rad=vertical_fov, clip_y=False)
+    vertical_in_fov = bool(np.all((raw_rotated[:, 1] >= 0.0) & (raw_rotated[:, 1] <= float(height - 1))))
+    rotated = raw_rotated.copy()
+    rotated[:, 1] = np.clip(rotated[:, 1], 0.0, float(height - 1))
     seam_crossing = bool(np.ptp(rotated[:, 0]) > width * 0.5)
     unwrapped = unwrap_x(rotated, width)
     cx, cy, w, h, angle, poly = fit_min_area_rect(unwrapped)
     aabb_x1, aabb_y1, aabb_x2, aabb_y2 = polygon_aabb(poly)
-    valid = bool(w > 1.0 and h > 1.0 and np.isfinite(poly).all())
+    valid = bool(vertical_in_fov and w > 1.0 and h > 1.0 and np.isfinite(poly).all())
     distortion = distortion_score_from_y(cy, height, vertical_fov_rad=vertical_fov)
     return {
         "frame": det.frame,
@@ -650,6 +693,7 @@ def rotate_detection_with_projection(
         "aabb": (aabb_x1, aabb_y1, aabb_x2 - aabb_x1, aabb_y2 - aabb_y1),
         "distortion_score": distortion,
         "seam_crossing": seam_crossing,
+        "vertical_in_fov": vertical_in_fov,
         "valid": valid,
     }
 
@@ -809,8 +853,24 @@ def rotate_images_for_sequence(
             continue
         height, width = image.shape[:2]
         actual_size = (width, height)
-        map_x, map_y = make_equirectangular_remap(width, height, rotation, vertical_fov_rad=vertical_fov_rad(args))
-        rotated = cv2.remap(image, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_WRAP)
+        clip_y = args.invalid_image_fill == "edge"
+        map_x, map_y = make_equirectangular_remap(
+            width,
+            height,
+            rotation,
+            vertical_fov_rad=vertical_fov_rad(args),
+            clip_y=clip_y,
+        )
+        border_value = (255, 255, 255) if args.invalid_image_fill == "white" else (0, 0, 0)
+        remap_image = cv2.copyMakeBorder(image, 0, 0, 1, 1, cv2.BORDER_WRAP)
+        rotated = cv2.remap(
+            remap_image,
+            map_x + 1.0,
+            map_y,
+            interpolation=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=border_value,
+        )
         dst = out_dir / (Path(det.frame_file).stem + args.image_ext)
         cv2.imwrite(str(dst), rotated)
         written += 1
@@ -853,7 +913,8 @@ def process_sequence(path: Path, input_format: str, args: argparse.Namespace, va
         oriented_path = args.out_root / args.input_kind / "oriented_csv" / variant / f"{seq}.csv"
         aabb_path = args.out_root / args.input_kind / "mot_aabb" / variant / f"{seq}.txt"
         oriented_count = write_csv(oriented_path, ORIENTED_HEADER, (oriented_row(r) for r in records))
-        aabb_count = write_mot_txt(aabb_path, (mot_aabb_row(r) for r in records))
+        invalid_count = sum(1 for r in records if not bool(r["valid"]))
+        aabb_count = write_mot_txt(aabb_path, (mot_aabb_row(r) for r in records if bool(r["valid"])))
         summary.append(
             {
                 "sequence": seq,
@@ -861,6 +922,7 @@ def process_sequence(path: Path, input_format: str, args: argparse.Namespace, va
                 "input_records": len(detections),
                 "oriented_records": oriented_count,
                 "aabb_records": aabb_count,
+                "invalid_records": invalid_count,
                 "rotated_images": image_count,
                 "image_width": width,
                 "image_height": height,
@@ -897,6 +959,7 @@ def main() -> None:
     args = parse_args()
     validate_args(args)
     variants = [v.strip() for v in args.variants.split(",") if v.strip()]
+    warn_limited_fov_variants(args, variants)
     input_format, files = choose_input_files(args)
     if args.limit_seqs:
         files = files[: args.limit_seqs]
@@ -914,6 +977,7 @@ def main() -> None:
         "variants": variants,
         "edge_samples": args.edge_samples,
         "vertical_fov_deg": float(args.vertical_fov_deg),
+        "invalid_image_fill": args.invalid_image_fill,
         "input_kind": args.input_kind,
         "label_source": args.label_source,
         "min_score": args.min_score,

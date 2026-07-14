@@ -106,7 +106,7 @@ python -B tools/convert_quadtrack_to_orientation_benchmark.py \
   --image-width 2048 \
   --image-height 480 \
   --vertical-fov-deg 120 \
-  --variants prior_a2b,polar_up,target_north_80 \
+  --variants prior_a2b,polar_up,target_north_55 \
   --edge-samples 32 \
   --input-kind detections
 ```
@@ -126,10 +126,11 @@ python -B tools/convert_quadtrack_to_orientation_benchmark.py \
   --image-width 2048 \
   --image-height 480 \
   --vertical-fov-deg 120 \
-  --variants prior_a2b,polar_up,target_north_80 \
+  --variants prior_a2b,polar_up,target_north_55 \
   --edge-samples 32 \
   --input-kind detections \
-  --rotate-images
+  --rotate-images \
+  --invalid-image-fill black
 ```
 
 For official sequence folders, the converter now scans the real files under
@@ -137,6 +138,13 @@ For official sequence folders, the converter now scans the real files under
 both zero-based names such as `000000.jpg` and one-based names such as
 `000001.jpg`. If `--rotate-images` still reports `images=0`, verify that images
 exist and are readable:
+
+QuadTrack's 120-degree vertical coverage is a limited-FOV panorama, not the
+full 180-degree ERP assumed by PriOr-Flow's paper figures. Strong non-yaw image
+rotations can therefore request source latitudes that do not exist in the
+original image. The converter fills those pixels with `--invalid-image-fill`
+instead of stretching top/bottom rows. Use `--vertical-fov-deg 180` only when
+the source image and boxes are in full-ERP coordinates.
 
 ```bash
 find ../QuadTrack/test -maxdepth 3 \( -path '*/img1/*' -o -path '*/images/*' \) | head
@@ -165,7 +173,7 @@ python -B tools/convert_quadtrack_to_orientation_benchmark.py \
   --image-width 2048 \
   --image-height 480 \
   --vertical-fov-deg 120 \
-  --variants prior_a2b,polar_up,target_north_80 \
+  --variants prior_a2b,polar_up,target_north_55 \
   --edge-samples 32 \
   --input-kind detections
 ```
@@ -181,7 +189,7 @@ python -B tools/convert_quadtrack_to_orientation_benchmark.py \
   --image-width 2048 \
   --image-height 480 \
   --vertical-fov-deg 120 \
-  --variants target_north_80,target_south_80
+  --variants target_north_55,target_south_55
 ```
 
 With rotated images:
@@ -191,8 +199,10 @@ python -B tools/convert_quadtrack_to_orientation_benchmark.py \
   --quadtrack-root /data/QuadTrack_test/OmniTrack_Omnidet_test \
   --image-root /data/QuadTrack_test/images \
   --out-root outputs/quadtrack_orientation_benchmark \
-  --variants prior_a2b,polar_up,target_north_80 \
-  --rotate-images
+  --vertical-fov-deg 120 \
+  --variants prior_a2b,polar_up,target_north_55 \
+  --rotate-images \
+  --invalid-image-fill black
 ```
 
 For JSON annotations instead of MOT txt:
@@ -205,7 +215,7 @@ python -B tools/convert_quadtrack_to_orientation_benchmark.py \
   --image-width 2048 \
   --image-height 480 \
   --vertical-fov-deg 120 \
-  --variants target_north_80
+  --variants target_north_55
 ```
 
 Common parameter adjustments:
@@ -216,11 +226,17 @@ Common parameter adjustments:
 - `--vertical-fov-deg`: vertical angular coverage used by the y coordinate.
   QuadTrack uses `120`; use `180` only when the source image is a full ERP in
   PriOr-Flow's original vertical convention.
+- `--invalid-image-fill`: controls pixels whose rotated source ray falls
+  outside the available vertical FOV when `--rotate-images` is used. `black`
+  is closest to PriOr-Flow's `grid_sample` mask behavior. `edge` reproduces the
+  old top/bottom row stretching and is mainly for debugging.
 - `--variants`: choose rotations. `prior_a2b`/`prior_b2a` reproduce
   PriOr-Flow orthogonal rotations; `polar_up`/`polar_down` create fixed strong
-  ERP polar distortion; `target_north_80`/`target_south_80` move each sequence's
-  average target direction near +/-80 degrees latitude; `custom` uses
-  `--yaw-deg --pitch-deg --roll-deg`.
+  ERP polar distortion; under QuadTrack's 120-degree y coverage use
+  `target_north_55`/`target_south_55` to stay inside the visible +/-60-degree
+  latitude range. Use `target_north_80`/`target_south_80` only with
+  `--vertical-fov-deg 180` full-ERP geometry. `custom` uses `--yaw-deg
+  --pitch-deg --roll-deg`.
 - `--edge-samples`: samples each original box side before rotation. Use `16`
   for quick checks, `32` for normal conversion, and `64` for large boxes or
   severe polar distortion.
@@ -257,7 +273,7 @@ outputs/quadtrack_orientation_benchmark_with_images/
   visualizations/
     prior_a2b/0000.mp4
     polar_up/0000.mp4
-    target_north_80/0000.mp4
+    target_north_55/0000.mp4
     visualization_manifest.json
 ```
 
@@ -266,7 +282,7 @@ To visualize only selected data while debugging:
 ```bash
 python -B tools/visualize_orientation_benchmark.py \
   --benchmark-root ./outputs/quadtrack_orientation_benchmark_with_images \
-  --variants prior_a2b,target_north_80 \
+  --variants prior_a2b,target_north_55 \
   --seqs 0000,0001 \
   --max-frames 100 \
   --draw-aabb
